@@ -1005,7 +1005,7 @@ function card(t) {
   return `<div class="tcard" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
     <span class="tk">${esc(taskKey(t))} · ${PRIO[t.priority] ? PRIO[t.priority][0] : 'Medium'}</span>
     <span class="tt">${esc(t.title)}</span>
-    <span class="tf">${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
+    <span class="tf">${t.blocked ? `<span class="lbl blocked" title="${esc(t.blockedReason || '')}">Blocked: ${esc(t.blockedReason || '')}</span>` : ''}${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
   </div>`;
 }
 function renderCols() {
@@ -1049,6 +1049,7 @@ function openTask(t, isNew) {
   $('tdStatus').innerHTML = selOpts(COLS, t.status || 'todo');
   $('tdPrio').innerHTML = selOpts(Object.entries(PRIO).map(([k, v]) => [k, v[0]]), t.priority || 'med');
   $('tdAssignee').innerHTML = selOpts([['', 'Any free worker'], ...workers.map(w => [w.id, w.name])], t.assignee || '');
+  $('tdBlocked').checked = !!t.blocked; $('tdBlockedReason').value = t.blockedReason || ''; $('tdBlockedReason').hidden = !t.blocked;
   $('tdDue').value = t.due || ''; $('tdLabels').value = (t.labels || []).join(', ');
   paintTaskCtx(); paintQa(); $('tdDelete').hidden = isNew;
   paintTaskRuns(true);
@@ -1135,6 +1136,9 @@ function saveTaskForm() {
   if (!title) { toast('Give the task a title.'); $('tdTitle').focus(); return null; }
   const f = { title: title.slice(0, 140), desc: $('tdDesc').value.trim(), status: $('tdStatus').value, priority: $('tdPrio').value, assignee: $('tdAssignee').value, due: $('tdDue').value,
     labels: $('tdLabels').value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8), ctx: [...$('tdCtx').querySelectorAll('input[data-c]:checked:not(:disabled)')].map(i => i.dataset.c) };
+  f.blocked = $('tdBlocked').checked;
+  f.blockedReason = f.blocked ? $('tdBlockedReason').value.replace(/\s+/g, ' ').trim().slice(0, 140) : '';
+  if (f.blocked && !f.blockedReason) { toast('Add a one-line reason to mark this blocked.'); $('tdBlockedReason').focus(); return null; }
   if (f.status === 'done' && !taskIsNew && f.status !== t.status && !canFinish(t, f.desc)) { toast('Mark every acceptance criterion pass, or use the owner override, before Done.'); $('tdStatus').value = t.status; return null; }
   let real;
   if (taskIsNew) { real = makeTask(p, f); taskIsNew = false; editingTask = real; }
@@ -1144,6 +1148,7 @@ function saveTaskForm() {
 }
 $('taskForm').addEventListener('submit', e => { e.preventDefault(); const t = saveTaskForm(); if (t) { toast(`Saved ${taskKey(t)}.`); openTask(t, false); } });
 $('tdCtx').addEventListener('change', paintCtxNote);
+$('tdBlocked').addEventListener('change', () => { const r = $('tdBlockedReason'); r.hidden = !$('tdBlocked').checked; if (!r.hidden) r.focus(); });
 $('taskDrawer').addEventListener('click', e => {
   const run = e.target.closest('[data-job]');
   if (run) { $('taskDrawer').hidden = true; setView('factory'); openJob(run.dataset.job); return; }

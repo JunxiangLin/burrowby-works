@@ -172,7 +172,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], deps: Array.isArray(t.deps) ? t.deps.map(String) : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], deps: Array.isArray(t.deps) ? t.deps.map(String) : [], blocked: !!(t.blocked && String(t.blockedReason || '').trim()), blockedReason: t.blocked ? String(t.blockedReason || '').replace(/\s+/g, ' ').trim().slice(0, 140) : '', due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -369,6 +369,7 @@ class Engine extends EventEmitter {
   // ---------- BWI-37: PM auto-pull ----------
   // A task is blocked while any task listed in its `deps` (keys like P-3) is not done.
   isBlocked(t) {
+    if (t.blocked) return true;
     return (t.deps || []).some((k) => { const d = this.findTask(k); return d && d.status !== 'done'; });
   }
   // Higher score = the worker's specialty matches the ticket's labels/title better.
@@ -1041,6 +1042,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   upsert(coll, obj) {
     const norm = { projects: normProject, tasks: normTask, contexts: normCtx }[coll];
     if (!norm) throw new Error(`Unknown collection ${coll}`);
+    if (coll === 'tasks' && obj.blocked && !String(obj.blockedReason || '').trim()) throw new Error('A blocked ticket needs a one-line reason.');
     const o = norm({ ...obj, updatedAt: Date.now() });
     const list = this[coll];
     const i = list.findIndex((x) => x.id === o.id);
@@ -1052,6 +1054,9 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       // Engine code that mutates the stored task in place records its own entries instead.
       if (prev !== obj) {
         if (o.status !== prev.status) o.audit.push(this.auditEntry('status', 'You', `Status: ${this.colLabel(prev.status)} -> ${this.colLabel(o.status)}`));
+        if (o.blocked && !prev.blocked) o.audit.push(this.auditEntry('status', 'You', `Blocked: ${o.blockedReason}`));
+        else if (!o.blocked && prev.blocked) o.audit.push(this.auditEntry('status', 'You', `Unblocked (was: ${prev.blockedReason})`));
+        else if (o.blocked && o.blockedReason !== prev.blockedReason) o.audit.push(this.auditEntry('status', 'You', `Blocked reason: ${o.blockedReason}`));
         if (o.assignee !== prev.assignee) o.audit.push(this.auditEntry('assignee', 'You', `Assignee: ${this.workerLabel(prev.assignee)} -> ${this.workerLabel(o.assignee)}`));
       }
     }

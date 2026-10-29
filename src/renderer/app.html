@@ -230,6 +230,8 @@
     <label for="tdDesc">Description</label><textarea id="tdDesc" maxlength="6000" placeholder="What should the worker produce? Add acceptance criteria."></textarea>
     <div id="tdQa" class="qa-check" hidden></div>
     <div class="two"><div><label for="tdStatus">Status</label><select id="tdStatus"></select></div><div><label for="tdPrio">Priority</label><select id="tdPrio"></select></div></div>
+    <label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0"><input type="checkbox" id="tdBlocked" style="width:auto"> Blocked</label>
+    <input id="tdBlockedReason" type="text" maxlength="140" placeholder="Why is it blocked? (required, one line)" aria-label="Blocked reason" hidden>
     <div class="two"><div><label for="tdAssignee">Assignee</label><select id="tdAssignee"></select></div><div><label for="tdDue">Due</label><input id="tdDue" type="date"></div></div>
     <label for="tdLabels">Labels</label><input id="tdLabels" placeholder="Comma separated, e.g. research, copy">
     <label>Context <span class="hint" id="tdCtxNote"></span></label><div class="checks" id="tdCtx"></div>
