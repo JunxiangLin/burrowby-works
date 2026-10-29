@@ -586,6 +586,11 @@ class Engine extends EventEmitter {
       try { this.acceptProposals(j.id); } catch (e) { /* no project: leave proposals for manual accept */ }
     }
     const w = this.byWorker(j.workerId);
+    if (j.status === 'done' || j.status === 'failed') {
+      // Structured event for the desktop notification (pet name, job title, status).
+      const title = (t && t.title) || String(j.text || '').split('\n')[0].slice(0, 100) || `Job #${j.n}`;
+      this.emit('job-finished', { id: j.id, pet: w ? w.name : 'A worker', title, status: j.status });
+    }
     if (j.status === 'done') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `${w ? w.name : 'A worker'} finished job #${j.n}.${j.byForeman ? ' Want the summary?' : ''}` });
     else if (j.status === 'failed') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `Job #${j.n} failed (${j.error}).${j.byForeman ? ' Want me to retry it?' : ''}` });
   }

@@ -3,7 +3,7 @@
 // the settings window and the tray icon.
 const fs = require('fs');
 const path = require('path');
-const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, shell, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, Menu, Tray, nativeImage, shell, dialog, Notification } = require('electron');
 const { Store } = require('./store');
 const { execFile } = require('child_process');
 const { Engine, SPECIES } = require('./engine');
@@ -361,6 +361,7 @@ function registerIpc() {
     const allowed = {};
     for (const k of ['model', 'quickModel', 'deepModel']) if (typeof patch?.[k] === 'string' && patch[k].trim()) allowed[k] = patch[k].trim();
     if (typeof patch?.roam === 'boolean') allowed.roam = patch.roam;
+    if (typeof patch?.notifyJobs === 'boolean') allowed.notifyJobs = patch.notifyJobs;
     if (typeof patch?.claudePath === 'string') allowed.claudePath = patch.claudePath.trim();
     const config = store.saveConfig(allowed);
     if ('claudePath' in allowed) refreshClaude();
@@ -370,6 +371,21 @@ function registerIpc() {
   ipcMain.handle('settings:set-foreman', (_e, f) => engine.setForeman(f || {}));
   ipcMain.handle('settings:import', (e) => importFromFile(win(e)));
   ipcMain.handle('settings:open-data', () => shell.openPath(store.dir));
+}
+
+// Desktop notification when a pet finishes or fails a job; clicking it opens
+// and focuses the app window. Controlled by the notifyJobs setting.
+const liveNotifications = new Set(); // keep references so click handlers are not garbage collected
+function notifyJobFinished({ pet, title, status }) {
+  if (store.getConfig().notifyJobs === false || !Notification.isSupported()) return;
+  const n = new Notification({
+    title: status === 'done' ? `${pet} finished a job` : `${pet} failed a job`,
+    body: `${title}\nStatus: ${status === 'done' ? 'Done' : 'Failed'}`,
+  });
+  liveNotifications.add(n);
+  n.on('click', () => openApp('factory'));
+  n.on('close', () => liveNotifications.delete(n));
+  n.show();
 }
 
 function makeDigest() {
@@ -398,6 +414,7 @@ app.whenReady().then(() => {
   engine.on('patch', (p) => broadcast('works:patch', p));
   engine.on('reset', (s) => broadcast('works:reset', s));
   engine.on('notice', (n) => broadcast('works:notice', n));
+  engine.on('job-finished', notifyJobFinished);
   registerIpc();
   createOverlay();
   // Daily digest: check hourly, send at most one per 24h (also on startup if one is due).

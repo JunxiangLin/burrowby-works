@@ -31,6 +31,7 @@
     $('cli-path').value = st.config.claudePath || '';
     for (const k of ['model', 'quickModel', 'deepModel']) $(k).value = st.config[k];
     $('roam').checked = st.config.roam;
+    $('notifyJobs').checked = st.config.notifyJobs !== false;
     $('fName').value = st.foreman.name;
     $('fSpecies').value = st.foreman.species;
     return st;
@@ -59,6 +60,11 @@
   });
   $('roam').addEventListener('change', async () => {
     await window.settings.saveConfig({ roam: $('roam').checked });
+    flash($('cfg-msg'), 'Saved.', true);
+  });
+
+  $('notifyJobs').addEventListener('change', async () => {
+    await window.settings.saveConfig({ notifyJobs: $('notifyJobs').checked });
     flash($('cfg-msg'), 'Saved.', true);
   });
 

@@ -8,6 +8,7 @@ const DEFAULT_CONFIG = {
   quickModel: 'claude-haiku-5-5',
   deepModel: 'claude-opus-5-5',
   roam: true,
+  notifyJobs: true, // desktop notification when a job finishes or fails
   claudePath: '', // empty = find claude.exe on PATH / ~/.local/bin
 };
 

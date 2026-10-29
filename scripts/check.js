@@ -190,6 +190,7 @@ const fakeClaude = {
   console.log(`OK: scheduler (peak ${peak}), streaming + TTFT, stop, board -> Review, context block, foreman loop (${foremanCalls.length} calls), retire, persistence, import merge/replace`);
 
   await require('./check-blocked')();
+  await require('./check-notify')();
   await require('./check-code')();
   fs.rmSync(dir, { recursive: true, force: true });
   process.exit(0);
