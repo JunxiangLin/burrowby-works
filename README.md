@@ -24,6 +24,8 @@ Requirements:
   uses `gh` to open, list and merge pull requests. Without it, coding still works and branches are pushed, but no PRs are opened.
 
 ```bash
+git clone https://github.com/JunxiangLin/burrowby-works.git
+cd burrowby-works
 npm install
 ```
 
@@ -221,7 +223,16 @@ also move data back the other way.
 | Worker worktrees (removed after each push) | `%USERPROFILE%\Burrowby\worktrees\<KEY>\` |
 | App settings (models, `claude.exe` path, roaming) | `%APPDATA%\burrowby-desk-pet\data\config.json` |
 
-**Settings → Open data folder** opens that folder. Writes are atomic: the app writes a temp file, then renames it.
+**Settings → Open data folder** opens that folder.
+
+### Autosave
+
+Your data saves automatically. You never need to export to keep it.
+
+- **Save errors** show in plain words, for example when the disk is full. The app retries every 5 seconds and tells you when saving works again.
+- **A corrupt data file** is kept as a backup copy next to it (`works.json.corrupt-<time>`), so autosave can't overwrite it.
+- **Safe writes:** the app writes a temp file, then renames it.
+- **Export data** is an optional backup. You don't need it for normal use.
 
 ## Adding workers
 
@@ -248,6 +259,12 @@ An offline test of the engine against a fake `claude` CLI, with no network.
   - merging only into dev, and release to prod
   - the safety rails: app folder, Burrowby root, scrubbed environment, redaction
   - PM tickets, the foreman's hire, update and list-PRs tools, and Stop all
+
+```bash
+node scripts/autosave.test.js
+```
+
+Tests autosave: data survives a restart, save errors are reported, and a corrupt file is backed up.
 
 ```bash
 npm run smoke

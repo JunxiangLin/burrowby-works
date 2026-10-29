@@ -266,7 +266,7 @@ class Engine extends EventEmitter {
       this.saveFailed = true;
       this.emit('notice', { kind: 'save-error', text: `Burrowby could not save your changes to ${this.file} (${e.code || e.message}). Check that the disk is not full and the folder is writable. It will keep trying.` });
       clearTimeout(this.saveTimer);
-      this.saveTimer = setTimeout(() => this.saveNow(), 10000);
+      this.saveTimer = setTimeout(() => this.saveNow(), 5000);
       return false;
     }
   }

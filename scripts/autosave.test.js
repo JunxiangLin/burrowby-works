@@ -1,4 +1,4 @@
-// BW-1 tests: `node scripts/test-autosave.js`. Autosave persists across restarts and save failures are reported.
+// BW-1 tests: `node scripts/autosave.test.js`. Autosave persists across restarts and save failures are reported.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
@@ -63,6 +63,19 @@ const test = async (name, fn) => { try { await fn(); console.log('PASS: ' + name
     fs.writeFileSync = () => { throw new Error('nope'); };
     try { E.saveNow(); } finally { fs.writeFileSync = orig; }
     assert.ok(E.saveTimer, 'retry timer not set');
+    clearTimeout(E.saveTimer);
+  });
+
+  await test('failed save retries every 5 seconds', () => {
+    const dir = tmpdir();
+    const E = mk(dir);
+    const orig = fs.writeFileSync;
+    const origT = global.setTimeout;
+    let delay;
+    fs.writeFileSync = () => { throw new Error('nope'); };
+    global.setTimeout = (fn, ms) => { delay = ms; return origT(() => {}, 0); };
+    try { E.saveNow(); } finally { fs.writeFileSync = orig; global.setTimeout = origT; }
+    assert.strictEqual(delay, 5000);
     clearTimeout(E.saveTimer);
   });
 
