@@ -23,7 +23,7 @@ const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa'];
+  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'retryOf', 'retries'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
@@ -774,7 +774,9 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   retryJob(id) {
     const j = this.jobById(id);
     if (!j) return null;
-    return this.createJob(j.text, j.workerId && this.byWorker(j.workerId) ? j.workerId : 'any', j.tier, { ctx: j.ctx, projectId: j.projectId });
+    // A retry is a brand-new job (so it gets its own history entry) with the same
+    // inputs; it links back to the job it retries and carries the running retry count.
+    return this.createJob(j.text, j.workerId && this.byWorker(j.workerId) ? j.workerId : 'any', j.tier, { ctx: j.ctx, projectId: j.projectId, taskId: j.taskId, retryOf: j.id, retries: (j.retries || 0) + 1 });
   }
 
   deleteJobs(ids) {

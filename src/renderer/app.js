@@ -73,7 +73,7 @@ const store = {
 let foreman = { name: 'Marmalade', species: 'cat', tier: 'quick' };
 let chat = [];
 const factoryDoc = () => ({ workers: workers.map(w => ({ id: w.id, name: w.name, species: w.species, specialty: w.specialty })), concurrency, foreman });
-const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId'];
+const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'retryOf', 'retries'];
 function jobDoc(j) { const o = {}; for (const k of JOB_FIELDS) if (j[k] !== undefined && j[k] !== null) o[k] = k === 'output' ? String(j[k]).slice(0, MAX_OUTPUT) : j[k]; return o; }
 
 // ---------- pet drawing ----------
@@ -594,7 +594,7 @@ function paintJobDetail() {
   const w = byWorker(j.workerId || j.pref); const [sl] = STATUS[j.status];
   $('jdAvatar').src = avatar(w ? w.species : 'chick');
   $('jdTitle').textContent = `Job #${j.n} · ${sl}`;
-  $('jdSub').textContent = `${w ? w.name : 'Any free worker'} · ${TIER_LABEL[j.tierApplied || j.tier]} model${j.simulated ? ' · simulated' : ''} · assigned ${ago(j.createdAt)}`;
+  $('jdSub').textContent = `${w ? w.name : 'Any free worker'} · ${TIER_LABEL[j.tierApplied || j.tier]} model${j.simulated ? ' · simulated' : ''} · assigned ${ago(j.createdAt)}${j.retries ? ` · retry ${j.retries}` : ''}`;
   const wt = waitMs(j), th = j.startedAt ? (ttft(j) ?? runMs(j)) : 0, wr = j.firstTokenAt ? runMs(j) - ttft(j) : 0;
   const total = wt + th + wr || 1;
   $('jdStats').innerHTML = [['Queued', fmtDur(wt)], ['To first token', j.firstTokenAt ? fmtDur(ttft(j)) : j.status === 'running' ? '…' : '–'], ['Run time', j.startedAt ? fmtDur(runMs(j)) : '–'], ['≈ Tokens', `${fmtNum(j.inTok || 0)}→${fmtNum(j.outTok || 0)}`]].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="val">${v}</div></div>`).join('');
@@ -611,7 +611,7 @@ function paintOutput() {
   if (paintedOut.id === j.id && paintedOut.len === len && paintedOut.status === j.status) return;
   const el = $('jdOutput'); const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
   let html = j.output ? md(j.output) : `<p class="placeholder">${j.status === 'queued' ? 'Waiting for a free worker.' : j.status === 'running' ? 'Thinking…' : j.status === 'failed' ? 'No output.' : j.status === 'cancelled' ? 'Stopped before any output.' : ''}</p>`;
-  if (j.status === 'failed') html += `<p class="placeholder" style="color:var(--crit)">${esc(ERROR_COPY[j.error] || 'The job failed.')} (${esc(j.error || 'error')})</p>`;
+  if (j.status === 'failed') html += `<p class="placeholder" style="color:var(--crit)">${esc(ERROR_COPY[j.error] || 'The job failed.')} (${esc(j.error || 'error')})</p>${j.errorDetail ? `<pre class="files" style="white-space:pre-wrap">${esc(j.errorDetail)}</pre>` : ''}`;
   if (j.truncated) html += '<p class="placeholder">The answer hit the length limit and was cut short.</p>';
   el.innerHTML = html;
   if (stick && j.status === 'running') el.scrollTop = el.scrollHeight;
@@ -673,7 +673,7 @@ function paintJobActions() {
   const b = [];
   if (j.output) b.push('<button class="btn primary small" type="button" data-act="copy">Copy output</button>');
   if (isActive(j)) b.push(`<button class="btn small" type="button" data-act="stop">${j.status === 'queued' ? 'Cancel' : 'Stop'}</button>`);
-  else b.push('<button class="btn small" type="button" data-act="retry">Run again</button>', '<button class="btn small danger" type="button" data-act="delete">Delete</button>');
+  else b.push(`<button class="btn small" type="button" data-act="retry">${j.status === 'failed' ? 'Retry' : 'Run again'}</button>`, '<button class="btn small danger" type="button" data-act="delete">Delete</button>');
   $('jdActions').innerHTML = b.join('');
 }
 function renderWorkers() {
