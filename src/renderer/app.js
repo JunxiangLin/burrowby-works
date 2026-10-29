@@ -63,7 +63,7 @@ const COLL = { context: 'contexts', projects: 'projects', tasks: 'tasks' };
 // the change back to every window.
 const store = {
   mode: 'app',
-  saveFactory() { api.setFactory({ workers: workers.map(w => ({ id: w.id, name: w.name, species: w.species, specialty: w.specialty, capability: w.capability || 'text' })), concurrency, foreman }); },
+  saveFactory() { api.setFactory({ workers: workers.map(w => ({ id: w.id, name: w.name, species: w.species, specialty: w.specialty, capability: w.capability || 'text', web: !!w.web })), concurrency, foreman }); },
   saveJob() {},
   deleteJob(j) { api.deleteJobs([j.id]); },
   saveDoc(coll, o) { if (COLL[coll]) api.upsert(COLL[coll], JSON.parse(JSON.stringify(o))); },
@@ -638,8 +638,8 @@ function mergeHTML(j) {
 let paintedCode = '';
 function paintCode(j) {
   const box = $('jdCode');
-  if (!j || (j.kind !== 'code' && j.kind !== 'qa' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }
-  const sig = j.id + j.status + (j.merge ? j.merge.status : '') + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + JSON.stringify((j.proposals || []).map(x => x.accepted)) + (j.diff ? j.diff.insertions + '/' + j.diff.deletions : '');
+  if (!j || (j.kind !== 'code' && j.kind !== 'qa' && !j.web && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }
+  const sig = j.id + j.status + (j.sources || []).length + (j.merge ? j.merge.status : '') + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + JSON.stringify((j.proposals || []).map(x => x.accepted)) + (j.diff ? j.diff.insertions + '/' + j.diff.deletions : '');
   if (sig === paintedCode) return; paintedCode = sig;
   box.hidden = false;
   let h = '';
@@ -650,8 +650,14 @@ function paintCode(j) {
     if (j.diff && j.diff.files.length) h += `<ul class="files">${j.diff.files.map(f => `<li>${esc(f.file)} <b>+${f.add}</b> <i>−${f.del}</i></li>`).join('')}</ul>`;
     if ((j.steps || []).length) h += `<span class="label" style="margin-top:8px">Steps</span><ul class="steps">${j.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
   }
+  if (j.web && j.kind !== 'code' && j.kind !== 'qa') {
+    if ((j.steps || []).length) h += `<span class="label">Web research</span><ul class="steps">${j.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    const src = j.sources || [];
+    h += `<span class="label" style="margin-top:8px">Sources</span>${src.length ? `<ul class="sources">${src.map(s => `<li><a href="${esc(s.url)}" target="_blank" rel="noreferrer">${esc(s.url)}</a><small>${s.how === 'fetched' ? 'read' : 'cited'}</small></li>`).join('')}</ul>` : `<div class="empty">${j.status === 'running' ? 'None yet.' : 'No sources were used or cited.'}</div>`}`;
+  }
   if (j.proposals && j.proposals.length) {
     const open = j.proposals.some(x => !x.accepted);
+    if (j.web && j.proposals.some(x => !x.accepted)) h += `<p class="hint" style="color:var(--warn);margin:8px 0 0">This job read web pages, so these tickets wait for you; they are never auto-accepted. Check them for anything a page could have slipped in.</p>`;
     h += `<span class="label" style="margin-top:8px">Proposed tickets</span><div class="proposals">${j.proposals.map((x, i) => `<label><input type="checkbox" data-prop="${i}" ${x.accepted ? 'checked disabled' : 'checked'}><span><b>${esc(x.title)}</b> <span class="lbl">${esc(x.priority)}</span>${x.accepted ? ` <span class="lbl">added as ${esc(x.accepted)}</span>` : ''}<small>${esc(x.desc)}</small></span></label>`).join('')}</div>${open ? '<div class="actions"><button class="btn small primary" type="button" data-act="accept-props">Add selected to Backlog</button></div>' : ''}`;
   }
   box.innerHTML = h;
@@ -683,7 +689,7 @@ function paintJobActions() {
 function renderWorkers() {
   $('workerTable').innerHTML = `<table><thead><tr><th>Worker</th><th>Now</th><th class="num">Jobs</th><th class="num">Success</th><th class="num">p50</th><th class="num">≈ Tok out</th><th class="num">Busy 1h</th></tr></thead><tbody>${workers.map(w => {
     const s = workerStats(w), [st, sc] = workerStatus(w);
-    return `<tr data-id="${w.id}" class="${w.id === selWorker ? 'sel' : ''}"><td><div class="pet"><img src="${avatar(w.species)}" alt=""><div><b>${esc(w.name)}</b><span>${CAP_LABEL[w.capability] || 'text'} · ${esc((w.specialty || '').split(/[.\n]/)[0])}</span></div></div></td>
+    return `<tr data-id="${w.id}" class="${w.id === selWorker ? 'sel' : ''}"><td><div class="pet"><img src="${avatar(w.species)}" alt=""><div><b>${esc(w.name)}${w.web ? ' <em class="webtag" title="Web access: searches and reads the web, cites sources">web</em>' : ''}</b><span>${CAP_LABEL[w.capability] || 'text'} · ${esc((w.specialty || '').split(/[.\n]/)[0])}</span></div></div></td>
       <td><span class="pill" style="--c:${sc}">${st}</span></td><td class="num">${s.total}</td>
       <td class="num" style="${s.succ != null && s.succ < 0.8 ? 'color:var(--crit)' : ''}">${s.succ == null ? '–' : (s.succ * 100).toFixed(0) + '%'}</td>
       <td class="num">${s.p50 == null ? '–' : fmtDur(s.p50)}</td><td class="num">${fmtNum(s.out)}</td><td class="num">${(s.util * 100).toFixed(0)}%</td></tr>`;
@@ -703,7 +709,7 @@ function paintWorkerDetail(force) {
   $('wdStats').innerHTML = [['Shipped', s.ok], ['Failed', s.failed], ['Run p50', s.p50 == null ? '–' : fmtDur(s.p50)], ['Run p95', s.p95 == null ? '–' : fmtDur(s.p95)], ['≈ Tok in', fmtNum(s.tin)], ['≈ Tok out', fmtNum(s.out)], ['Busy 1h', (s.util * 100).toFixed(0) + '%'], ['Queued for', jobs.filter(q => q.status === 'queued' && q.pref === w.id).length]].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="val">${v}</div></div>`).join('');
   if (force || formFor !== w.id) {
     formFor = w.id;
-    $('wdName').value = w.name; $('wdSpecies').value = w.species; $('wdSpec').value = w.specialty || ''; $('wdCap').value = w.capability || 'text';
+    $('wdName').value = w.name; $('wdSpecies').value = w.species; $('wdSpec').value = w.specialty || ''; $('wdCap').value = w.capability || 'text'; $('wdWeb').checked = !!w.web;
     retireArmed = false; $('retireBtn').textContent = 'Retire';
   }
 }
@@ -830,7 +836,7 @@ $('wdForm').addEventListener('submit', e => {
   const w = byWorker(selWorker); if (!w) return;
   const name = $('wdName').value.trim().slice(0, 20);
   if (!name) { toast('Give the worker a name.'); return; }
-  w.name = name; w.species = $('wdSpecies').value; w.specialty = $('wdSpec').value.trim().slice(0, 1200); w.capability = $('wdCap').value;
+  w.name = name; w.species = $('wdSpecies').value; w.specialty = $('wdSpec').value.trim().slice(0, 1200); w.capability = $('wdCap').value; w.web = $('wdWeb').checked;
   store.saveFactory(); syncWorkerSelect(); toast(`Saved ${w.name}.`);
   holdRender = false; paintWorkerDetail(true); renderWorkers();
 });

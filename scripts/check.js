@@ -192,6 +192,7 @@ const fakeClaude = {
   await require('./check-blocked')();
   await require('./check-notify')();
   await require('./check-code')();
+  await require('./check-web')();
   fs.rmSync(dir, { recursive: true, force: true });
   process.exit(0);
 })().catch((e) => {

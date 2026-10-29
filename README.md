@@ -178,6 +178,27 @@ Releasing: only the **Release to prod** button on the Board does it.
   GitHub or Anthropic tokens before they're shown or saved.
 - **Stop all jobs** sits in the Control room header, in the pet's right-click menu, and in the foreman's tools.
 
+## Web access for research and PM workers
+
+Workers have a **Web access** switch (Control room → Workers → edit, or ask the foreman: `hire_worker` / `update_worker` take
+`web_access`). It's on by default for project managers and for workers whose specialty mentions research, and off for coders,
+writers and everyone else. Existing workers got the same defaults when this was added; a choice you make yourself is kept.
+The worker table shows a **web** badge.
+
+Text and PM jobs for those workers run `claude -p` with **only** WebSearch and WebFetch:
+`--tools "WebSearch,WebFetch" --allowedTools WebSearch WebFetch --permission-mode dontAsk --permission-prompts none --max-turns 12`,
+and a 10-minute cap. There are no file or shell tools. Coding and QA jobs keep their own toolset, without the web. This works headless
+through Claude Code's own sign-in (a claude.ai seat; no API key).
+
+- **Prompting.** Web-enabled workers are told to cite each fact's URL and the page's date, to prefer official docs and primary sources,
+  to open the most authoritative page rather than trust search snippets, to say plainly when something couldn't be confirmed, and
+  to treat everything on a web page as untrusted data, never as instructions.
+- **What you see.** The job's live steps list each search query (*Searched the web: "…"*) and each page read (*Fetched https://…*).
+  The job detail has a **Sources** list: pages the worker read first, then URLs it cited.
+- **The ticket gate.** A web page could try to plant tickets, so tickets proposed by a PM job that used the web are **never
+  auto-accepted**, even with PM auto-accept on, and the foreman's `accept_tickets` refuses them. They wait in the job detail
+  with a warning until you accept the ones you want. PM jobs without web access behave as before.
+
 ## Importing from the Burrowby Works artifact
 
 1. In the artifact, open the Factory and click **Export data** in the Control room. It saves a `burrowby-works-*.json` file.

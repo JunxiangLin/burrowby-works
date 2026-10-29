@@ -314,6 +314,10 @@ body{margin:0}
 .code-info .steps li::before{content:'› ';color:var(--accent)}
 .code-info .pr{font-weight:700}
 .code-info a,.joblist a{color:var(--accent)}
+.webtag{font-style:normal;display:inline-block;margin-left:4px;padding:0 6px;border-radius:999px;font:600 10.5px var(--f-mono);color:#fff;background:var(--s-walk);vertical-align:1px}
+.code-info .sources{margin:4px 0 0;padding:0;list-style:none;font-size:12.5px;max-height:200px;overflow:auto}
+.code-info .sources li{padding:2px 0;word-break:break-all}
+.code-info .sources small{color:var(--muted);margin-left:6px}
 .repo-note{font-size:12px;color:var(--muted)}
 .proposals label{display:flex;gap:8px;align-items:flex-start;padding:4px 0}
 .proposals small{display:block;color:var(--muted)}
