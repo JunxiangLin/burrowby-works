@@ -24,6 +24,8 @@ Requirements:
   uses `gh` to open, list and merge pull requests. Without it, coding still works and branches are pushed, but no PRs are opened.
 
 ```bash
+git clone https://github.com/JunxiangLin/burrowby-works.git
+cd burrowby-works
 npm install
 ```
 
@@ -221,7 +223,18 @@ also move data back the other way.
 | Worker worktrees (removed after each push) | `%USERPROFILE%\Burrowby\worktrees\<KEY>\` |
 | App settings (models, `claude.exe` path, roaming) | `%APPDATA%\burrowby-desk-pet\data\config.json` |
 
-**Settings → Open data folder** opens that folder. Writes are atomic: the app writes a temp file, then renames it.
+**Settings → Open data folder** opens that folder.
+
+### Autosave
+
+Your data saves automatically a moment after every change. You don't need to export anything to keep your work.
+
+- **Safe writes.** The app writes a temp file, then renames it, so a crash can't leave a half-written file.
+- **Save errors.** If a save fails (for example the disk is full), the app tells you in plain words, with the file and the cause. It
+  retries every 10 seconds until it works, then tells you saving is back.
+- **Corrupt data file.** If `works.json` can't be read at start-up, the app keeps a backup copy next to it
+  (`works.json.corrupt-<time>`) before it saves anything new, so the old file is never lost.
+- **Export is optional.** The **Export data** button writes a backup file you can keep or move to another PC. You never need it for saving.
 
 ## Adding workers
 
@@ -250,6 +263,12 @@ An offline test of the engine against a fake `claude` CLI, with no network.
   - PM tickets, the foreman's hire, update and list-PRs tools, and Stop all
 
 ```bash
+node scripts/test-autosave.js
+```
+
+Tests autosave: failed saves retry, and a corrupt `works.json` is backed up.
+
+```bash
 npm run smoke
 ```
 
@@ -273,7 +292,7 @@ python scripts/port-artifact.py artifact/burrowby.html src/renderer
 
 ## Differences from the artifact
 
-- **Data lives on this PC**, not in claude.ai storage. Use Export and Import to move data between the two.
+- **Data lives on this PC**, not in claude.ai storage. Data saves automatically. Use Export and Import only to move data between the two.
 - **The in-page roaming pet is gone.** The desktop pet replaces it. In the Assistant dock, **Drop me on the taskbar** brings the desktop pet back.
 - **No simulation mode.** If Claude Code isn't ready, jobs wait in the queue and an alert says why.
 - **Rate limits** come from your Claude plan's usage limits as reported by Claude Code. They aren't per-page limits.
