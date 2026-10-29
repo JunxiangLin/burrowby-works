@@ -282,7 +282,7 @@
     $('jobs-badge').textContent = String(active);
     if (!chatOpen || tab !== 'jobs') return;
     const list = state.jobs.slice(-25).reverse();
-    const sig = list.map((j) => j.id + j.status + (j.pr ? j.pr.url : '') + (j.steps || []).length + (j.id === openJobId ? (j.output || '').length : '')).join('|') + openJobId;
+    const sig = list.map((j) => j.id + j.status + (j.pr ? j.pr.url : '') + (j.retries || 0) + (j.steps || []).length + (j.id === openJobId ? (j.output || '').length : '')).join('|') + openJobId;
     if (!force && sig === jobsSig) return;
     jobsSig = sig;
     const ul = $('job-list');
@@ -292,16 +292,25 @@
       const [sl, sc] = STATUS[j.status] || STATUS.failed;
       const open = j.id === openJobId;
       const out = open ? `<div class="job-output b">${j.output ? md(j.output) : esc(j.status === 'queued' ? 'Waiting for a free worker.' : j.status === 'running' ? 'Thinking…' : j.errorDetail || j.error || 'No output.')}</div>` : '';
-      const acts = j.status === 'queued' || j.status === 'running' ? `<div class="job-actions"><button class="btn small" data-stop="${j.id}">${j.status === 'queued' ? 'Cancel' : 'Stop'}</button></div>` : '';
-      return `<li><div class="job-head" data-open="${j.id}"><span class="job-title">#${j.n} ${esc(j.text)}</span><span class="pill" style="--c:${sc}">${sl}</span></div><div class="job-meta">${w ? esc(w.name) : 'any worker'}${j.kind === 'code' ? ` · code${j.steps ? ` · ${j.steps.length} steps` : ''}${j.diff ? ` · +${j.diff.insertions} −${j.diff.deletions}` : ''}` : ''}${j.pr ? ` · <a href="${esc(j.pr.url)}" target="_blank" rel="noreferrer">PR #${j.pr.number}</a>` : ''}</div>${out}${acts}</li>`;
+      const failed = j.status === 'failed';
+      // Failed/interrupted cards: last error (first 300 chars, link to the full text) and Retry.
+      const fullErr = String(j.errorDetail || j.error || 'The job failed.');
+      const errBox = failed ? `<div class="job-error" style="color:var(--crit)">${esc(fullErr.slice(0, 300))}${fullErr.length > 300 ? '…' : ''} <a href="#" data-open="${j.id}">${open ? 'Hide full error' : 'Full error'}</a></div>` : '';
+      const retryBtn = failed ? `<button class="btn small primary" data-retry="${j.id}">Retry</button>` : '';
+      const retryNote = j.retries ? ` · retry ${j.retries}` : '';
+      const acts = j.status === 'queued' || j.status === 'running' ? `<div class="job-actions"><button class="btn small" data-stop="${j.id}">${j.status === 'queued' ? 'Cancel' : 'Stop'}</button></div>` : failed ? `<div class="job-actions">${retryBtn}</div>` : '';
+      return `<li><div class="job-head" data-open="${j.id}"><span class="job-title">#${j.n} ${esc(j.text)}</span><span class="pill" style="--c:${sc}">${sl}</span></div>${errBox}<div class="job-meta">${w ? esc(w.name) : 'any worker'}${retryNote}${j.kind === 'code' ? ` · code${j.steps ? ` · ${j.steps.length} steps` : ''}${j.diff ? ` · +${j.diff.insertions} −${j.diff.deletions}` : ''}` : ''}${j.pr ? ` · <a href="${esc(j.pr.url)}" target="_blank" rel="noreferrer">PR #${j.pr.number}</a>` : ''}</div>${out}${acts}</li>`;
     }).join('') : '<li class="empty">No jobs yet. Ask me to get something done!</li>';
     ul.scrollTop = keepScroll;
   }
   $('job-list').addEventListener('click', (e) => {
     const stop = e.target.closest('[data-stop]');
     if (stop) { works.stopJob(stop.dataset.stop); return; }
+    const retry = e.target.closest('[data-retry]');
+    if (retry) { retry.disabled = true; works.retryJob(retry.dataset.retry); return; }
     const head = e.target.closest('[data-open]');
-    if (head) { openJobId = openJobId === head.dataset.open ? null : head.dataset.open; renderJobs(true); }
+    if (head) {
+      e.preventDefault(); openJobId = openJobId === head.dataset.open ? null : head.dataset.open; renderJobs(true); }
   });
 
   // ---------- engine sync ----------
