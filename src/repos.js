@@ -99,7 +99,18 @@ class Repos {
   }
 
   // A fresh feature branch from origin/dev, checked out in its own worktree.
-  async createWorktree(key, n, title) {
+  // Serialized per repo so parallel jobs never race on the branch-name check or git's lock files.
+  createWorktree(key, n, title) {
+    this._wtLocks = this._wtLocks || new Map();
+    const prev = this._wtLocks.get(key) || Promise.resolve();
+    const result = prev.catch(() => {}).then(() => this._createWorktree(key, n, title));
+    const tail = result.catch(() => {});
+    this._wtLocks.set(key, tail);
+    tail.then(() => { if (this._wtLocks.get(key) === tail) this._wtLocks.delete(key); });
+    return result;
+  }
+
+  async _createWorktree(key, n, title) {
     const clone = this.clonePath(key);
     await git(clone, 'fetch', 'origin', DEV);
     let branch = `feature/${key}-${n}-${slug(title)}`;
