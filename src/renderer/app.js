@@ -974,10 +974,10 @@ function card(t) {
   if (j && isActive(j)) jp = `<span class="pill" style="--c:${j.status === 'queued' ? 'var(--s-wait)' : j.firstTokenAt ? 'var(--s-write)' : 'var(--s-think)'}">${j.status === 'queued' ? 'queued' : j.firstTokenAt ? 'writing' : 'thinking'} #${j.n}</span>`;
   else if (j && j.status === 'failed' && t.status !== 'done') jp = `<span class="pill" style="--c:var(--crit)">run failed</span>`;
   const nCtx = (t.ctx || []).length;
-  return `<div class="tcard" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
+  return `<div class="tcard${t.blockedReason ? ' blocked' : ''}" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
     <span class="tk">${esc(taskKey(t))} · ${PRIO[t.priority] ? PRIO[t.priority][0] : 'Medium'}</span>
     <span class="tt">${esc(t.title)}</span>
-    <span class="tf">${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
+    <span class="tf">${t.blockedReason ? `<span class="lbl blocked" title="${esc(t.blockedReason)}">Blocked: ${esc(t.blockedReason.length > 40 ? t.blockedReason.slice(0, 39) + '…' : t.blockedReason)}</span>` : ''}${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
   </div>`;
 }
 function renderCols() {
@@ -1021,6 +1021,8 @@ function openTask(t, isNew) {
   $('tdStatus').innerHTML = selOpts(COLS, t.status || 'todo');
   $('tdPrio').innerHTML = selOpts(Object.entries(PRIO).map(([k, v]) => [k, v[0]]), t.priority || 'med');
   $('tdAssignee').innerHTML = selOpts([['', 'Any free worker'], ...workers.map(w => [w.id, w.name])], t.assignee || '');
+  $('tdBlocked').value = t.blockedReason || '';
+  $('tdLog').innerHTML = (t.log || []).slice(-5).reverse().map(l => `<span>${esc(l.text)} · ${ago(l.at)}</span>`).join('');
   $('tdDue').value = t.due || ''; $('tdLabels').value = (t.labels || []).join(', ');
   paintTaskCtx(); $('tdDelete').hidden = isNew;
   paintTaskRuns(true);
@@ -1053,11 +1055,16 @@ function saveTaskForm() {
   const t = editingTask, p = t && projectById(t.projectId); if (!p) return null;
   const title = $('tdTitle').value.trim();
   if (!title) { toast('Give the task a title.'); $('tdTitle').focus(); return null; }
-  const f = { title: title.slice(0, 140), desc: $('tdDesc').value.trim(), status: $('tdStatus').value, priority: $('tdPrio').value, assignee: $('tdAssignee').value, due: $('tdDue').value,
+  const f = { title: title.slice(0, 140), desc: $('tdDesc').value.trim(), status: $('tdStatus').value, priority: $('tdPrio').value, assignee: $('tdAssignee').value, blockedReason: $('tdBlocked').value.replace(/\s+/g, ' ').trim().slice(0, 140), due: $('tdDue').value,
     labels: $('tdLabels').value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8), ctx: [...$('tdCtx').querySelectorAll('input[data-c]:checked:not(:disabled)')].map(i => i.dataset.c) };
   let real;
   if (taskIsNew) { real = makeTask(p, f); taskIsNew = false; editingTask = real; }
-  else { if (f.status !== t.status) t.order = Date.now(); Object.assign(t, f); saveTask(t); real = t; }
+  else {
+    if (f.status !== t.status) t.order = Date.now();
+    const was = t.blockedReason || '', now = f.blockedReason;
+    if (was !== now) t.log = [...(t.log || []), { at: Date.now(), text: !now ? `Unblocked (was: ${was})` : was ? `Block reason changed to: ${now}` : `Blocked: ${now}` }].slice(-50);
+    Object.assign(t, f); saveTask(t); real = t;
+  }
   renderBoard();
   return real;
 }
