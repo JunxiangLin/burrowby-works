@@ -129,6 +129,28 @@ const fakeClaude = {
   assert.strictEqual(reloaded.chat.length, 4);
   assert.strictEqual(reloaded.workers.length, 3);
 
+  // --- context: save, reload from disk, search, and reach the project's jobs
+  const note = engine.addContext({ title: 'Launch decision', kind: 'note', content: 'We ship on Fridays.', project: 'BLOG' });
+  const outJob = engine.jobById(j.id);
+  const outCtx = engine.saveJobToContext(outJob.id);
+  assert.ok(outCtx, 'job output saved as context');
+  engine.saveNow();
+  const ctxReload = new Engine({ dir, claude: fakeClaude });
+  assert.ok(ctxReload.ctxById(note.id), 'context entry survives a restart');
+  assert.ok(ctxReload.ctxById(outCtx.id), 'job output context survives a restart');
+  assert.ok(ctxReload.projectById(p.id).ctx.includes(note.id), 'entry stays attached to the project');
+  foremanScript = [
+    { reply: '', actions: [{ tool: 'search_context', input: { query: 'fridays' } }] },
+    (opts) => { assert.match(opts.prompt, /Launch decision/); return { reply: 'Found it.', actions: [] }; },
+  ];
+  await ctxReload.askForeman('What did we decide about shipping?');
+  foremanScript = [{ reply: 'Saved.', actions: [{ tool: 'save_context', input: { title: 'Tone', content: 'Keep it friendly.', project: 'BLOG' } }] }];
+  await engine.askForeman('Remember the tone');
+  assert.ok(engine.contexts.some((x) => x.title === 'Tone'), 'foreman can save context');
+  const nextJob = engine.sendTask(engine.tasks.find((t) => t.projectId === p.id && t.status === 'todo').id);
+  assert.ok(nextJob.ctx.includes(note.id), 'later jobs for the project receive saved context');
+  await wait(200);
+
   // --- import: merge renumbers clashing job numbers; replace swaps everything
   const exp = {
     format: 'burrowby-works-export', version: 1, exportedAt: Date.now(),
