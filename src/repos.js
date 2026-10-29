@@ -113,6 +113,24 @@ class Repos {
     return { branch, dir, base };
   }
 
+  // A detached checkout of a pushed PR branch, for QA. Commits QA adds are pushed back with pushHead.
+  async createReviewWorktree(key, branch) {
+    const clone = this.clonePath(key);
+    await git(clone, 'fetch', 'origin', branch);
+    const dir = path.join(this.worktreeRoot(key), `qa-${branch.replace(/^feature\//, '').replace(/[^A-Za-z0-9._-]/g, '-')}`);
+    this.assertSafe(dir);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    await git(clone, 'worktree', 'add', '--detach', dir, `origin/${branch}`);
+    const base = (await git(dir, 'rev-parse', 'HEAD')).trim();
+    return { branch, dir, base };
+  }
+
+  async pushHead(dir, branch) {
+    this.assertSafe(dir);
+    if (!/^feature\//.test(branch)) throw new Error(`Refusing to push to ${branch}: only feature branches.`);
+    await git(dir, 'push', 'origin', `HEAD:refs/heads/${branch}`);
+  }
+
   // After the agent: commit leftovers, measure the diff against the base.
   async finishWorktree(dir, base, message) {
     this.assertSafe(dir);

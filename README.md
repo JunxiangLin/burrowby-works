@@ -60,9 +60,9 @@ ported from the artifact's source. The section switcher stays centered whichever
     a stacked queued/thinking/writing chart, 5-minute throughput and worker utilization.
   - **Jobs:** a time breakdown for each job, with live streaming output, copy, stop, run again and delete.
   - **Workers:** edit a worker's name, species and specialty, hire or retire workers, and set 1, 2 or 3 jobs at once.
-- **Board.** Projects have a name, key, color, description and project context. Tasks live in Backlog, To do, In progress, Review and
+- **Board.** Projects have a name, key, color, description and project context. Tasks live in Backlog, To do, In progress, Testing, Review and
   Done columns, with drag and drop between them. The task drawer has title, description, status, priority, assignee, due date, labels, task context, run history and latest output.
-  **Save and send to factory** moves the task to In progress, and to Review when the job ships. **Suggest tasks** asks Claude
+  **Save and send to factory** moves the task to In progress, and to Review when the job ships (coding jobs pass through Testing first). **Suggest tasks** asks Claude
   for ideas. **Start with a sample project** sets up a demo.
 - **Context.** Entries have a title, type, tags and up to 80,000 characters of content. You can import text files and attach entries to projects or
   tasks. A meter shows each entry's share of the 60,000-character per-job context budget. Attached entries go into the job prompt
@@ -85,6 +85,7 @@ Every worker has a **capability**, set in Control room → Workers or by asking 
 | **Text only** | Writes an answer, as in the artifact. |
 | **Code** | For a task or job in a project that has a repository, edits the repo in its own git worktree, commits, and the app opens a PR into `dev`. Otherwise writes text. |
 | **Project manager** | Writes notes and proposed tickets. The job detail lists them with checkboxes and an **Add selected to Backlog** button. The foreman can accept them too. |
+| **QA** | Tests a coder's PR branch before the task reaches Review. See "The QA stage". |
 
 Workers whose specialty starts with "Coder" are code-capable by default.
 
@@ -116,25 +117,39 @@ The Board header then shows which folder workers can edit, and a **Release to pr
 3. The worker is told to commit with a message that starts with the task key. If it leaves changes uncommitted, the app commits them.
    If nothing changed, the job fails with `no_changes`.
 4. **The app**, not the agent, pushes the branch and runs `gh pr create --base dev`. The worktree is then removed; the branch stays.
-5. The task moves to **Review**. The task drawer and the job detail show:
+5. The task moves to **Testing** and QA starts automatically (see below). The task drawer and the job detail show:
    - the branch, with a PR link
    - the files changed, with + and − lines
    - every step the worker took
 
-**Auto-merge into dev** is a per-project setting in the project drawer, on by default. After the app opens a worker's PR:
+### The QA stage and auto-merge
 
-1. It merges the latest `dev` into the worktree, locally and never pushed, so conflicts show up early and the check tests the merged result.
-2. It runs the project's **check command** in the worktree, with the same scrubbed environment workers get. Leave the command
-   empty to use `npm run check`, or `npm test`, from `package.json`.
-3. If the check passes and GitHub reports the PR as mergeable, the app merges it into `dev` with a merge commit, deletes the
-   branch, and moves the task to **Done**. Done because the change is integrated and verified; your gate is Release to prod, which
-   lists exactly the PRs that will ship.
-4. If the check fails, there's a conflict, or GitHub won't merge it:
-   - the PR stays open and the task stays in **Review**
-   - the job detail shows the reason and the tail of the check output
-   - the Control room raises an alert, and the pet tells you
+The board runs Backlog → To do → In progress → **Testing** → Review → Done. Every coder's work on a task, whether it came from
+**Save and send to factory** or a direct job tied to a task, goes through one pipeline with no manual step:
 
-`prod` is never touched. With auto-merge off, or on a project with no check command, PRs wait for you.
+1. **Testing.** When the coder's branch is pushed and the PR opened, the task moves to **Testing** and a job is queued for a **QA**
+   worker (capability "QA"). If the factory has none, one is hired automatically (Mochi if that name is free).
+2. **QA** checks out the PR branch in its own worktree with the same tool allowlist and no push rights. It reads the diff, runs the
+   existing tests, adds tests where they are missing, and checks the task's acceptance criteria. It ends with `VERDICT: PASS` or `VERDICT: FAIL`.
+3. **QA fail:** the task goes back to **In progress** with the original coder as assignee. Nothing from QA is pushed. Send the task to the
+   factory again and the coder is given the QA notes.
+4. **QA pass:** the tests QA added are pushed to the PR branch. Then, if the project's **auto-merge** setting is on (the default, in
+   the project drawer):
+   1. The app merges the latest `dev` into QA's worktree, locally and never pushed, so conflicts show up early and the check tests
+      the merged result.
+   2. It runs the project's **check command** there, with the same scrubbed environment workers get. Leave the command empty to use
+      `npm run check`, or `npm test`, from `package.json`.
+   3. If the check passes and GitHub reports the PR as mergeable, the app merges it into `dev` with a merge commit, deletes the branch,
+      and moves the task to **Done**. Done because the change is tested, integrated and verified; your gate is Release to prod, which
+      lists exactly the PRs that will ship.
+5. **Review** is where the task goes when a person needs to look:
+   - auto-merge is off, or the project has no check command
+   - the check fails, `dev` conflicts, or GitHub won't merge it. The job detail shows the reason and the tail of the check output,
+     the Control room raises an alert, and the pet tells you.
+   - QA stopped or gave no verdict. A note says so, so a task never sits in Testing.
+
+QA notes are kept on the task (drawer → **QA notes**). Coding jobs not tied to a task skip QA and go straight to the auto-merge step.
+Text and PM jobs have no PR, so they go straight to Review as before. `prod` is never touched by any of this.
 
 Merging by hand: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
 Releasing: only the **Release to prod** button on the Board does it.

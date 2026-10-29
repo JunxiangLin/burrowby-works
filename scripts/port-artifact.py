@@ -432,6 +432,26 @@ js = rep(js, "  const sig = js.map(j => j.id + j.status + (j.output || '').lengt
 js = rep(js, "  if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);",
          "  if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);\n  for (const j of jobs.filter(j => j.merge && j.merge.status === 'blocked' && j.pr && !j.pr.merged && j.finishedAt > Date.now() - 24 * 3600e3)) { const t = j.taskId && taskById(j.taskId); out.push(['warn', `PR #${j.pr.number}${t ? ` (${taskKey(t)})` : ''} was not auto-merged: ${j.merge.reason}. It is open for you on GitHub.`]); }")
 
+# 13. QA stage (BWI-12): Testing column, QA capability, QA notes, QA jobs in the job detail
+markup = rep(markup, '<option value="pm">Project manager: proposes tickets</option></select>',
+             '<option value="pm">Project manager: proposes tickets</option><option value="qa">QA: tests each coder\'s PR before it merges</option></select>')
+js = rep(js, "const CAP_LABEL = { text: 'text', code: 'code', pm: 'PM' };", "const CAP_LABEL = { text: 'text', code: 'code', pm: 'PM', qa: 'QA' };")
+js = rep(js, "const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['review', 'Review'], ['done', 'Done']];",
+         "const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];")
+js = rep(js, "(j.prError || '') + (j.steps || []).length).join('|');\n  if (!force && sig === runsSig) return; runsSig = sig;",
+         "(j.prError || '') + (j.steps || []).length).join('|') + '#' + (t.qa || []).length;\n  if (!force && sig === runsSig) return; runsSig = sig;\n  const qaHTML = (t.qa || []).length ? `<span class=\"label\">QA notes</span>` + [...t.qa].reverse().map(q => `<div class=\"output\"><b>${q.verdict === 'pass' ? 'Passed' : q.verdict === 'fail' ? 'Failed' : 'Not finished'}</b> · ${esc(q.by || 'QA')} · job #${q.n}${q.verdict === 'fail' && q.coder ? ` · back to ${esc(q.coder)}` : ''}<br>${md(q.notes || '')}</div>`).join('') : '';")
+js = rep(js, "  $('tdRuns').innerHTML = js.length ? `<span class=\"label\">Factory runs</span>",
+         "  $('tdRuns').innerHTML = js.length ? qaHTML + `<span class=\"label\">Factory runs</span>")
+js = rep(js, "${j.kind === 'code' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">",
+         "${j.kind === 'code' || j.kind === 'qa' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">")
+js = rep(js, "api.onNotice(n => { if (n.kind === 'task-review') toast(n.text); });",
+         "api.onNotice(n => { if (['task-review', 'task-testing', 'task-qa-fail'].includes(n.kind)) toast(n.text); });")
+# job detail: QA jobs show branch, PR, verdict, merge result and steps like coding jobs
+js = rep(js, "  if (!j || (j.kind !== 'code' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }",
+         "  if (!j || (j.kind !== 'code' && j.kind !== 'qa' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }")
+js = rep(js, "  if (j.kind === 'code') {\n    h += `<span class=\"label\">Code</span>",
+         "  if (j.kind === 'code' || j.kind === 'qa') {\n    h += `<span class=\"label\">${j.kind === 'qa' ? `QA${j.qa && j.qa.verdict ? ` · ${j.qa.verdict === 'pass' ? 'passed' : 'failed'}` : ''}` : 'Code'}</span>")
+
 page = f"""<!doctype html>
 <html lang="en">
 <head>
