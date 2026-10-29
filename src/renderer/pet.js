@@ -354,8 +354,30 @@
   }
   works.onPatch(applyPatch);
   works.onReset(load);
+  // Self-update: a banner at the top of the popover with the same actions as the main window.
+  let updState = null;
+  const UPD_BTN = { apply: ['Update now', 'primary'], restart: ['Restart now', 'primary'], cancel: ['Cancel restart', ''], check: ['Check again', ''] };
+  function paintUpd(st) {
+    updState = st;
+    const bar = $('upd-bar');
+    bar.hidden = !(st && st.show);
+    if (bar.hidden) return;
+    const acts = (st.actions || []).filter((a) => UPD_BTN[a]);
+    bar.innerHTML = `<div>${esc(st.text)}</div>${st.state === 'blocked' && st.manual ? '<div class="job-meta">Settings shows the commands to fix it by hand.</div>' : ''}${acts.length ? `<div class="job-actions">${acts.map((a) => `<button class="btn small ${UPD_BTN[a][1]}" data-upd="${a}">${UPD_BTN[a][0]}</button>`).join('')}</div>` : ''}`;
+  }
+  $('upd-bar').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-upd]');
+    if (!b) return;
+    b.disabled = true;
+    const a = b.dataset.upd;
+    paintUpd(await (a === 'apply' ? works.applyUpdate() : a === 'restart' ? works.restartForUpdate() : a === 'cancel' ? works.cancelRestart() : works.checkUpdate()));
+  });
+  works.onUpdate(paintUpd);
+  works.updateStatus().then(paintUpd).catch(() => {});
+
   works.onNotice((n) => {
     if (n.kind === 'thinking') say(null, true);
+    else if (n.kind === 'update') say(`${n.text} Click me for options.`);
     else if (n.kind === 'reply' || n.kind === 'job') say(n.text);
   });
   pet.onConfig((c) => {

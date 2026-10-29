@@ -1608,6 +1608,29 @@ function applyCli(st) {
   sampleFn = st.ready ? true : null;
   syncMode(); paintChat();
 }
+// ---------- self-update bar ----------
+let updDismissed = '';
+const UPD_LABEL = { apply: ['Update now', 'primary'], restart: ['Restart now', 'primary'], later: ['Later', ''], cancel: ['Cancel restart', ''], check: ['Check again', ''] };
+function paintUpdate(st) {
+  const bar = $('updateBar'); if (!st) return;
+  const key = `${st.state}:${st.remote || st.to || st.reason || ''}:${st.waitFor || ''}`;
+  bar.hidden = !st.show || updDismissed === key;
+  if (bar.hidden) return;
+  bar.className = `update-bar ${st.state}`;
+  bar.dataset.key = key;
+  bar.innerHTML = `<div>${esc(st.text)}</div>${st.manual && st.manual.length ? `<pre>${esc(st.manual.join('\n'))}</pre>` : ''}<div class="actions">${(st.actions || []).map(a => `<button class="btn small ${UPD_LABEL[a][1]}" type="button" data-upd="${a}">${UPD_LABEL[a][0]}</button>`).join('')}${st.actions && st.actions.includes('later') ? '' : '<button class="btn small" type="button" data-upd="dismiss">Hide</button>'}</div>`;
+}
+$('updateBar').addEventListener('click', async e => {
+  const b = e.target.closest('[data-upd]'); if (!b) return;
+  const a = b.dataset.upd;
+  if (a === 'later' || a === 'dismiss') { updDismissed = $('updateBar').dataset.key; $('updateBar').hidden = true; return; }
+  b.disabled = true;
+  const st = await (a === 'apply' ? api.applyUpdate() : a === 'restart' ? api.restartForUpdate() : a === 'cancel' ? api.cancelRestart() : api.checkUpdate());
+  paintUpdate(st);
+  if (a === 'check' && st && st.state === 'up-to-date') toast(st.text);
+});
+api.onUpdate(paintUpdate);
+api.updateStatus().then(paintUpdate).catch(() => {});
 api.onPatch(applyPatch);
 api.onReset(s => { selJob = null; selWorker = null; editingTask = null; $('taskDrawer').hidden = true; $('projDrawer').hidden = true; loadSnapshot(s); renderDash(); setView(view); paintChatNow(); });
 api.onNotice(n => { if (['task-review', 'task-testing', 'task-qa-fail', 'save-error', 'save-ok'].includes(n.kind)) toast(n.text); });

@@ -362,7 +362,16 @@ class Engine extends EventEmitter {
     return `You are ${w.name}, a worker in a small agent factory.\nYour specialty and instructions: ${w.specialty || 'Generalist. Handle any job carefully.'}\n\nComplete the job below. Reply with the finished work only, with no preamble or sign-off. Use Markdown where it helps. Keep it under about 500 words unless the job clearly needs more.\n${this.contextBlock(j.ctx)}\nJob:\n${j.text}`;
   }
 
+  // A pending restart (self-update) lets running jobs finish but starts nothing new;
+  // queued jobs stay queued, are saved, and start again after the restart.
+  holdNewJobs(on) {
+    this.holdForRestart = !!on;
+    if (!on) this.schedule();
+  }
+  runningCount() { return this.jobs.filter((j) => j.status === 'running').length; }
+
   schedule() {
+    if (this.holdForRestart) return;
     if (!this.claude.exe()) return; // Claude Code missing: jobs wait in the queue
     let running = this.jobs.filter((j) => j.status === 'running').length;
     for (const j of this.jobs) {

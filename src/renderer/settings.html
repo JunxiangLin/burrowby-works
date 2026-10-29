@@ -77,6 +77,13 @@
     <div class="row"><label><input id="notifyJobs" type="checkbox" /> Desktop notification when a job finishes or fails</label></div>
     <div id="cfg-msg" class="msg"></div>
 
+    <h2>App updates</h2>
+    <p class="hint">The app keeps its own folder at the latest <code>prod</code>: after you press Release to prod, at startup and every 10 minutes. It only fast-forwards a clean checkout of <code>prod</code>.</p>
+    <p id="upd-text">Checking…</p>
+    <p class="hint" id="upd-dir"></p>
+    <pre id="upd-manual" hidden style="white-space: pre-wrap; background: var(--paper-2); padding: 8px; border-radius: 8px; font-size: 12px"></pre>
+    <div class="row" id="upd-actions"></div>
+
     <h2>Import from Burrowby Works</h2>
     <p class="hint">In the Burrowby Works artifact, use <b>Export data</b> in the Control room, then pick that JSON file here. If you already have data in this app you can merge or replace.</p>
     <div class="row"><button id="import" class="primary">Import a file…</button><button id="open-data">Open data folder</button></div>
