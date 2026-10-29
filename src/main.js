@@ -9,6 +9,7 @@ const { execFile } = require('child_process');
 const { Engine, SPECIES } = require('./engine');
 const { Repos } = require('./repos');
 const cli = require('./cli');
+const { buildDigest } = require('./digest');
 
 // The GitHub CLI may be installed after the app started, so look it up on each call.
 function ghExe() {
@@ -198,6 +199,7 @@ function petMenu() {
   const foreman = engine.foreman;
   return Menu.buildFromTemplate([
     { label: 'Open chat', click: () => sendToOverlay('open-chat') },
+    { label: 'Show daily digest', click: () => sendToOverlay('digest', makeDigest()) },
     { label: 'Open Burrowby Works', click: () => openApp() },
     {
       label: 'Go to',
@@ -294,6 +296,7 @@ function registerIpc() {
   // Shared factory (pet overlay + main window)
   ipcMain.handle('works:state', () => engine.snapshot());
   ipcMain.handle('works:cli-status', () => cliStatus);
+  ipcMain.handle('works:digest', () => makeDigest());
   ipcMain.handle('works:create-job', (_e, { text, pref, tier, extra }) => engine.createJob(String(text || ''), pref || 'any', tier || 'default', {
     ...(extra && extra.projectId ? { projectId: extra.projectId } : {}),
     ...(extra && Array.isArray(extra.ctx) ? { ctx: extra.ctx } : {}),
@@ -358,6 +361,10 @@ function registerIpc() {
   ipcMain.handle('settings:open-data', () => shell.openPath(store.dir));
 }
 
+function makeDigest() {
+  return buildDigest({ jobs: engine.jobs, tasks: engine.tasks, taskKey: (t) => engine.taskKey(t) });
+}
+
 app.on('second-instance', () => sendToOverlay('open-chat'));
 
 app.whenReady().then(() => {
@@ -382,6 +389,16 @@ app.whenReady().then(() => {
   engine.on('notice', (n) => broadcast('works:notice', n));
   registerIpc();
   createOverlay();
+  // Daily digest: check hourly, send at most one per 24h (also on startup if one is due).
+  const dailyDigest = () => {
+    const last = store.getConfig().lastDigestAt || 0;
+    if (Date.now() - last < 24 * 3600 * 1000) return;
+    store.saveConfig({ lastDigestAt: Date.now() });
+    const d = makeDigest();
+    if (!d.empty) sendToOverlay('digest', d);
+  };
+  setTimeout(dailyDigest, 15000);
+  setInterval(dailyDigest, 3600 * 1000);
   refreshClaude();
 
   tray = new Tray(trayIcon());
