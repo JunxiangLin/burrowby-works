@@ -31,6 +31,7 @@ const works = {
   listPrs: invoke('works:list-prs'),
   mergePr: invoke('works:merge-pr'),
   releaseToProd: invoke('works:release'),
+  releasePreview: invoke('works:release-preview'),
   repoInfo: invoke('works:repo-info'),
   openSettings: () => ipcRenderer.send('settings:open'),
   openApp: (view) => ipcRenderer.send('app:open', view),

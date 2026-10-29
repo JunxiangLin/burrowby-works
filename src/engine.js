@@ -126,7 +126,7 @@ function normJob(j) {
   return o;
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
-const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo) });
+const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null });
 const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
@@ -518,7 +518,20 @@ class Engine extends EventEmitter {
     for (const j of this.jobs) if (j.pr && j.pr.number === Number(number) && j.projectId === p.id) { j.pr = { ...j.pr, merged: true }; this.jobChanged(j); }
     return r;
   }
-  async releaseToProd(projectRef) { const p = this.repoProject(projectRef); return this.repos.releaseToProd(p.key); }
+  async releasePreview(projectRef) { const p = this.repoProject(projectRef); return this.repos.releasePreview(p.key); }
+  // Owner-only (the Board's button): fast-forward prod to the previewed dev commit.
+  async releaseToProd(projectRef, sha) {
+    const p = this.repoProject(projectRef);
+    const preview = await this.repos.releasePreview(p.key);
+    if (preview.diverged) throw new Error(preview.summary);
+    if (!preview.ahead) return { released: false, note: preview.summary, preview };
+    const r = await this.repos.release(p.key, sha || preview.devSha);
+    if (r.released) {
+      p.lastRelease = { sha: r.sha, from: r.from, commits: r.commits, prs: preview.prs, at: Date.now() };
+      this.changed('projects');
+    }
+    return { ...r, prs: preview.prs };
+  }
 
   // ---------- PM proposals ----------
   acceptProposals(jobRef, picks) {
@@ -611,7 +624,7 @@ class Engine extends EventEmitter {
     const list = this[coll];
     const i = list.findIndex((x) => x.id === o.id);
     // Repo settings change only through setProjectRepo, never through a plain save.
-    if (coll === 'projects') o.repo = i >= 0 ? list[i].repo : null;
+    if (coll === 'projects') { o.repo = i >= 0 ? list[i].repo : null; o.lastRelease = i >= 0 ? list[i].lastRelease : null; }
     if (i >= 0) list[i] = o;
     else list.push(o);
     this.changed(coll);

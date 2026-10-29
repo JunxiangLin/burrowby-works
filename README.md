@@ -122,8 +122,15 @@ The Board header then shows which folder workers can edit, and a **Release to pr
    - every step the worker took
 
 Merging: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
-Releasing: only the **Release to prod** button on the Board does it, after a confirmation. It fast-forwards `prod` to `dev` on the
-remote, and refuses if `prod` has commits that `dev` doesn't.
+Releasing: only the **Release to prod** button on the Board does it.
+- **Board status:** a line under the project shows what would ship. It's worked out from freshly fetched `origin/prod..origin/dev`
+  and refreshed every minute: commit count and the PRs merged in them. The button shows the count, for example
+  *Release to prod (4)*, and is disabled when there's nothing to ship.
+- **Confirmation:** clicking fetches again and lists the commits and PRs to confirm.
+- **Release:** it then fast-forwards `prod` to exactly that `dev` commit. `prod` only ever moves forward to an earlier `dev`, so it
+  never gets merge commits of its own.
+- **Refusals:** it refuses, and says why, if `prod` has commits that `dev` doesn't.
+- **Record:** the last release (from → to, PRs, when) is shown on the Board.
 
 ### Safety rails
 
