@@ -9,6 +9,7 @@ const invoke = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
 const works = {
   getState: invoke('works:state'),
   cliStatus: invoke('works:cli-status'),
+  getDigest: invoke('works:digest'),
   createJob: invoke('works:create-job'),
   stopJob: invoke('works:stop-job'),
   retryJob: invoke('works:retry-job'),
@@ -52,6 +53,7 @@ contextBridge.exposeInMainWorld('petApi', {
   getConfig: invoke('config:get'),
   onConfig: on('config'),
   onOpenChat: on('open-chat'),
+  onDigest: on('digest'),
   onResetPosition: on('reset-position'),
   onCursor: on('cursor'),
 });

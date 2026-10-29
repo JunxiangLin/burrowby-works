@@ -215,7 +215,26 @@
     }
     bubbleEl.hidden = false;
   }
-  bubbleEl.addEventListener('click', () => { bubbleEl.hidden = true; openChat(); });
+  bubbleEl.addEventListener('click', (e) => {
+    const more = e.target.closest('[data-more]');
+    bubbleEl.hidden = true;
+    openChat(more ? 'jobs' : tab);
+  });
+
+  // Owner digest: shipped / stuck / needs you, in one bubble. Empty sections are hidden.
+  function showDigest(d) {
+    if (chatOpen) return;
+    clearTimeout(bubbleTimer);
+    if (!d || d.empty) bubbleEl.textContent = 'Nothing to report right now.';
+    else {
+      const hasMore = d.sections.some((x) => x.more);
+      bubbleEl.innerHTML = d.sections.map((x) => `<div class="dg"><b>${esc(x.title)} (${x.total})</b>${x.items.map((i) => `<div>• ${esc(i)}</div>`).join('')}</div>`).join('')
+        + `<a href="#" data-more style="color:var(--accent,#FF8A3D)">${hasMore ? 'See more' : 'Open jobs'}</a>`;
+    }
+    bubbleEl.hidden = false;
+    bubbleTimer = setTimeout(() => (bubbleEl.hidden = true), 20000);
+  }
+  pet.onDigest(showDigest);
 
   // ---------- chat popover ----------
   function openChat(which = tab) {
