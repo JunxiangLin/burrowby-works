@@ -23,7 +23,7 @@ const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'retryOf', 'retries'];
+  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'retryOf', 'retries', 'needsReview', 'formatRetried'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
@@ -113,6 +113,15 @@ function parseTickets(text) {
     } catch { /* try the next block */ }
   }
   return [];
+}
+
+// Strict check for jobs that must end in a fenced JSON block of tickets.
+function validateTickets(text) {
+  const s = String(text || '');
+  if (!/```(?:json)?\s*[\s\S]*?```/.test(s)) return { ok: false, error: 'no fenced JSON block found' };
+  const tickets = parseTickets(s);
+  if (!tickets.length) return { ok: false, error: 'the JSON block did not parse into a non-empty list of tickets with titles' };
+  return { ok: true, tickets };
 }
 
 const uid = (p) => p + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -387,7 +396,37 @@ class Engine extends EventEmitter {
       if (res.stopReason === 'refusal') { j.status = 'failed'; j.error = 'refused'; }
       else if (!j.output.trim()) { j.status = 'failed'; j.error = 'empty_completion'; }
       else j.status = 'done';
-      if (j.kind === 'pm' && j.status === 'done') j.proposals = parseTickets(j.output);
+      if (j.kind === 'pm' && j.status === 'done') {
+        let v = validateTickets(j.output);
+        if (!v.ok) {
+          // Ask the worker once to fix its output before giving up.
+          j.formatRetried = true;
+          this.jobChanged(j);
+          const fixPrompt = `${prompt}\n\nYour previous reply was:\n${j.output.slice(0, 20000)}\n\nThat reply is not valid: ${v.error}. Reply again with your notes followed by the fenced JSON block of tickets in exactly the format requested.`;
+          try {
+            const r2 = await this.claude.stream({
+              exe: this.claude.exe(), model: j.model,
+              systemPrompt: `You are ${w.name}, a worker pet at Burrowby Works. ${w.specialty || ''}`.trim(),
+              prompt: fixPrompt, cwd: this.claude.cwd, signal: ctl.signal, onText,
+              onRateLimit: () => { this.lastRateLimit = Date.now(); },
+            });
+            j.output = String(r2.text || '').slice(0, MAX_OUTPUT);
+            j.outTok = (j.outTok || 0) + (r2.outTok || tok(j.output));
+            v = validateTickets(j.output);
+          } catch (e) {
+            if (e.code === 'cancelled') throw e;
+            v = { ok: false, error: `fix attempt failed (${e.code || e.message})` };
+          }
+        }
+        if (v.ok) j.proposals = v.tickets;
+        else {
+          j.status = 'failed';
+          j.error = 'needs_review';
+          j.errorDetail = `Output is not in the required format: ${v.error}.`;
+          j.needsReview = true;
+          j.proposals = [];
+        }
+      }
     } catch (e) {
       if (e.code === 'cancelled') j.status = 'cancelled';
       else { j.status = 'failed'; j.error = e.code || 'upstream_error'; j.errorDetail = e.message; }
@@ -403,7 +442,13 @@ class Engine extends EventEmitter {
 
   onJobFinished(j) {
     const t = j.taskId && this.taskById(j.taskId);
-    if (j.qaFor) this.onQaFinished(j, t);
+    if (j.needsReview && t) {
+      // Malformed output never lands silently: park the card in Review, labelled.
+      const labels = new Set(t.labels || []); labels.add('needs review');
+      Object.assign(t, { status: 'review', labels: [...labels], order: Date.now(), updatedAt: Date.now() });
+      this.changed('tasks');
+      this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} needs review: the worker's output was not in the required format.` });
+    } else if (j.qaFor) this.onQaFinished(j, t);
     else if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
       // Every coder's PR goes through QA before Review; other jobs go straight to Review.
       if (j.kind === 'code' && j.branch && this.startQa(j, t)) { /* task is now in Testing */ } else {
@@ -1296,4 +1341,4 @@ function parseForemanReply({ structured, text }) {
   };
 }
 
-module.exports = { Engine, COLS, SPECIES, TOOL_SPECS, FOREMAN_SCHEMA, parseForemanReply, parseTickets, parseQa, workerEnv, KINDS, CTX_BUDGET, CODE_ALLOWED, CODE_DENIED };
+module.exports = { Engine, COLS, SPECIES, TOOL_SPECS, FOREMAN_SCHEMA, parseForemanReply, parseTickets, validateTickets, parseQa, workerEnv, KINDS, CTX_BUDGET, CODE_ALLOWED, CODE_DENIED };
