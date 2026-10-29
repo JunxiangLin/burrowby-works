@@ -753,10 +753,12 @@ $('concSeg').addEventListener('click', e => {
   setConc(+b.dataset.c);
 });
 $('concNum').addEventListener('change', e => setConc(+e.target.value));
-const maxConc = () => Math.min(12, Math.max(1, workers.length));
+// Usage: jobs at once is 1..MAX_CONC (6), also capped by hired workers. Keep in sync with engine.js MAX_CONCURRENCY.
+const MAX_CONC = 6;
+const maxConc = () => Math.min(MAX_CONC, Math.max(1, workers.length));
 function setConc(n) {
   if (!Number.isInteger(n) || n < 1 || n > maxConc()) {
-    toast(`Jobs at once must be a whole number from 1 to ${maxConc()} (you have ${workers.length} hired ${workers.length === 1 ? 'worker' : 'workers'}, max 12).`);
+    toast(`Jobs at once must be a whole number from 1 to ${maxConc()} (you have ${workers.length} hired ${workers.length === 1 ? 'worker' : 'workers'}, max ${MAX_CONC}).`);
   } else { concurrency = n; store.saveFactory(); renderDash(); }
   syncConc();
 }

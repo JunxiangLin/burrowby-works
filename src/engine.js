@@ -22,7 +22,10 @@ const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
-const MAX_CONCURRENCY = 12;
+// Usage: set_jobs_at_once / setConcurrency(n) accept whole numbers 1..6 (also capped by hired workers).
+// Anything above 6 is rejected with a message; the saved factory value is clamped on load.
+// Keep in sync with maxConc() in src/renderer/app.js and the controls in app.html.
+const MAX_CONCURRENCY = 6;
 const validConc = (n, workerCount = MAX_CONCURRENCY) => Number.isInteger(n) && n >= 1 && n <= Math.min(MAX_CONCURRENCY, Math.max(1, workerCount));
 // Clear message for a rejected jobs-at-once value, or null when it is fine.
 const concError = (n, workerCount) => {
@@ -996,7 +999,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
 
   // ---------- factory ----------
   // Lowering never stops running jobs; the scheduler just won't start new ones until the count drops.
-  // Throws an Error with a clear message when c is below 1, above the worker count (max 12) or not whole.
+  // Throws an Error with a clear message when c is below 1, above the worker count (max 6) or not whole.
   setConcurrency(c) {
     const err = concError(c, this.workers.length);
     if (err) throw new Error(err);
@@ -1503,7 +1506,7 @@ const TOOL_SPECS = [
   { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm" | "qa"' } },
   { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm" | "qa"' }, required: ['worker'] },
   { name: 'retire_worker', description: 'Retire a worker who is not mid-job. Their queued jobs go to any free worker.', input: { worker: 'worker name' }, required: ['worker'] },
-  { name: 'set_jobs_at_once', description: 'Set how many jobs run at the same time.', input: { n: 'whole number from 1 to 12' }, required: ['n'] },
+  { name: 'set_jobs_at_once', description: 'Set how many jobs run at the same time.', input: { n: 'whole number from 1 to 6' }, required: ['n'] },
   { name: 'set_project_repo', description: "Give a project a repository (GitHub URL or local folder). The app clones it under the owner's Burrowby folder and makes sure prod and dev branches exist.", input: { project: 'project key', source: 'GitHub URL or local folder path' }, required: ['project', 'source'] },
   { name: 'list_prs', description: "List a project's open pull requests.", input: { project: 'project key' }, required: ['project'] },
   { name: 'merge_pr', description: 'Merge a pull request into dev. Refuses any PR that does not target dev.', input: { project: 'project key', pr: 'PR number' }, required: ['project', 'pr'] },
