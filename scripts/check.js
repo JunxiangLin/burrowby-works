@@ -174,13 +174,17 @@ const fakeClaude = {
   reloaded.importData(exp, 'replace');
   assert.strictEqual(reloaded.jobs.length, 2);
   assert.strictEqual(reloaded.foreman.name, 'Bao');
-  assert.strictEqual(reloaded.concurrency, 3);
   assert.strictEqual(reloaded.workers.length, 1);
+  assert.strictEqual(reloaded.concurrency, 1, 'imported value is clamped to the crew size');
+  assert.throws(() => reloaded.setConcurrency(2), /1 to 1/, 'cannot exceed hired workers');
+  for (let i = 0; i < 11; i++) reloaded.hireWorker({ name: `Extra${i}` });
+  assert.strictEqual(reloaded.workers.length, 12);
   reloaded.setConcurrency(12);
   assert.strictEqual(reloaded.concurrency, 12, 'accepts up to 12');
-  reloaded.setConcurrency(13);
-  reloaded.setConcurrency(2.5);
-  assert.strictEqual(reloaded.concurrency, 12, 'rejects out-of-range or fractional values');
+  assert.throws(() => reloaded.setConcurrency(13), /1 to 12/);
+  assert.throws(() => reloaded.setConcurrency(0), /1 to 12/);
+  assert.throws(() => reloaded.setConcurrency(2.5), /whole number/);
+  assert.strictEqual(reloaded.concurrency, 12, 'rejected values leave the setting alone');
   assert.throws(() => Engine.validateImport({ format: 'other' }), /not a Burrowby Works export/);
 
   console.log(`OK: scheduler (peak ${peak}), streaming + TTFT, stop, board -> Review, context block, foreman loop (${foremanCalls.length} calls), retire, persistence, import merge/replace`);

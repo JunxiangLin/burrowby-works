@@ -227,7 +227,7 @@ also move data back the other way.
 
 Open the Factory, go to **Control room → Workers** and click **Hire a worker**. Then give the new worker a name, species, specialty and
 capability, and click **Save worker**. You can also ask the foreman, for example "hire a second coder called Sprout". The specialty is the worker's instructions, and the foreman reads it to decide who gets which job. You can have up to 12
-workers. To change how many jobs run at once, use the **Jobs at once** control at the top right of the Factory. Pick a preset or type a number from 1 to 12; the value is saved across restarts.
+workers. To change how many jobs run at once, use the **Jobs at once** control at the top right of the Factory. Pick a preset or type a number from 1 up to the number of hired workers (max 12); other values are rejected with a message. The value is saved across restarts.
 Lowering it never stops running jobs, it only holds back new ones until the running count drops. High values can hit API rate limits
 and put heavy load on your machine, because each running job uses its own git worktree.
 
