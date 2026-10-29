@@ -16,16 +16,19 @@ const DEFAULT_WORKERS = [
   { id: 'w_juniper', name: 'Juniper', species: 'cat', specialty: 'Writer. Drafts emails, posts and docs in a warm, plain voice. Keeps things short.' },
   { id: 'w_clover', name: 'Clover', species: 'frog', specialty: 'Analyst. Breaks problems into steps, makes rough estimates, and ends with a clear recommendation.' },
 ];
-const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['review', 'Review'], ['done', 'Done']];
+const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];
 const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals'];
+  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'qaFor', 'qa'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
-const CAPABILITIES = ['text', 'code', 'pm'];
+const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
+const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
+const QA_SPECIALTY = 'QA tester. Reads the diff, runs the existing tests, adds tests where they are missing, checks every acceptance criterion, and reports plainly what passed and what failed.';
+const MAX_QA_NOTES = 8;
 
 // Coding jobs: the only tools a worker agent gets, and the shell commands it may run.
 // Everything else is denied without asking (--permission-mode dontAsk).
@@ -67,6 +70,28 @@ Rules:
 - Commit your work with git add and git commit. Start each commit message with "${ref}:".
 - Never push, never switch branches, never touch the dev or prod branches. The app pushes your branch and opens the pull request.
 - Do not print, copy or commit secrets, tokens or credentials.`;
+}
+
+function qaSystemPrompt(w, ref) {
+  return `You are ${w.name}, a QA worker pet at Burrowby Works. ${w.specialty || ''}
+
+You are verifying ${ref} in a git worktree checked out at the coder's pull request. The current directory is that worktree.
+Rules:
+- Only read and change files inside the current directory. Never use cd.
+- Run exactly one simple command per Bash call: no &&, ;, | or redirection. Commands outside the allowlist are denied automatically; if one is denied, carry on without it.
+- Allowed shell commands: git status/diff/add/commit/log/show/restore/rm/mv, npm install/ci/test/run, node, npx, python, pytest, docker build, docker compose.
+- Do not change the code under test to make it pass. You may only add or fix tests. Commit any tests you add with a message that starts with "${ref}:".
+- Never push, never switch branches. The app pushes passing work.
+- Do not print, copy or commit secrets, tokens or credentials.`;
+}
+
+// The QA worker's last line is "VERDICT: PASS" or "VERDICT: FAIL"; everything before it is the notes.
+function parseQa(text) {
+  const s = String(text || '').trim();
+  const ms = [...s.matchAll(/^\W*VERDICT\s*:\s*(PASS|FAIL)\b.*$/gim)];
+  if (!ms.length) return { verdict: null, notes: s };
+  const m = ms[ms.length - 1];
+  return { verdict: m[1].toUpperCase() === 'PASS' ? 'pass' : 'fail', notes: (s.slice(0, m.index) + s.slice(m.index + m[0].length)).trim() };
 }
 
 const PM_INSTRUCTIONS = `
@@ -127,7 +152,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -317,6 +342,7 @@ class Engine extends EventEmitter {
 
   jobKind(j, w) {
     if (w.capability === 'pm') return 'pm';
+    if (j.qaFor && w.capability === 'qa' && this.repoReady(this.projectById(j.projectId))) return 'qa';
     if (w.capability === 'code' && this.repoReady(this.projectById(j.projectId))) return 'code';
     return 'text';
   }
@@ -324,6 +350,7 @@ class Engine extends EventEmitter {
   async runJob(j, w) {
     const kind = this.jobKind(j, w);
     if (kind === 'code') return this.runCodeJob(j, w);
+    if (kind === 'qa') return this.runQaJob(j, w);
     j.kind = kind;
     const prompt = this.buildPrompt(j, w) + (kind === 'pm' ? PM_INSTRUCTIONS : '');
     Object.assign(j, { status: 'running', workerId: w.id, startedAt: Date.now(), output: '', inTok: tok(prompt), tierApplied: j.tier, model: this.claude.modelFor(j.tier) });
@@ -375,14 +402,140 @@ class Engine extends EventEmitter {
 
   onJobFinished(j) {
     const t = j.taskId && this.taskById(j.taskId);
-    if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
-      Object.assign(t, { status: 'review', order: Date.now(), updatedAt: Date.now() });
-      this.changed('tasks');
-      this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
+    if (j.qaFor) this.onQaFinished(j, t);
+    else if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
+      // Every coder's PR goes through QA before Review; other jobs go straight to Review.
+      if (j.kind === 'code' && j.branch && this.startQa(j, t)) { /* task is now in Testing */ } else {
+        Object.assign(t, { status: 'review', order: Date.now(), updatedAt: Date.now() });
+        this.changed('tasks');
+        this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
+      }
     }
     const w = this.byWorker(j.workerId);
     if (j.status === 'done') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `${w ? w.name : 'A worker'} finished job #${j.n}.${j.byForeman ? ' Want the summary?' : ''}` });
     else if (j.status === 'failed') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `Job #${j.n} failed (${j.error}).${j.byForeman ? ' Want me to retry it?' : ''}` });
+  }
+
+  // ---------- QA stage ----------
+  // The QA worker for a project: a free one if possible, else the least busy. Hires one if the factory has none.
+  qaWorker() {
+    const qa = this.workers.filter((w) => w.capability === 'qa');
+    if (qa.length) return qa.find((w) => !this.workerBusy(w)) || qa[0];
+    const used = new Set(this.workers.map((w) => w.name));
+    const name = [...QA_NAMES, ...NAMES].find((n) => !used.has(n));
+    if (!name || this.workers.length >= MAX_WORKERS) return null;
+    return this.saveWorker({ id: uid('w_'), name, species: 'bunny', specialty: QA_SPECIALTY, capability: 'qa' });
+  }
+
+  // A coder's work is ready: move the task to Testing and queue a QA job for the PR branch.
+  startQa(coderJob, t) {
+    if (!this.repoReady(this.projectById(coderJob.projectId))) return false;
+    const w = this.qaWorker();
+    if (!w) return false;
+    const ref = this.taskKey(t);
+    const text = `Verify ${ref}: ${t.title}\n\nAcceptance criteria and description:\n${t.desc || '(none given)'}\n\nThe coder's work is on branch ${coderJob.branch}${coderJob.pr ? ` (PR #${coderJob.pr.number})` : ''}. Coder's summary:\n${String(coderJob.output || '').slice(0, 3000)}`;
+    Object.assign(t, { status: 'testing', order: Date.now(), updatedAt: Date.now() });
+    const ctx = [...new Set([...(this.projectById(t.projectId).ctx || []), ...(t.ctx || [])])].filter((id) => this.ctxById(id));
+    const q = this.createJob(text, w.id, 'default', { ctx, taskId: t.id, projectId: t.projectId, qaFor: coderJob.id });
+    t.jobs = [...(t.jobs || []), q.id];
+    this.changed('tasks');
+    this.emit('notice', { kind: 'task-testing', text: `${ref} is in Testing with ${w.name}.` });
+    return true;
+  }
+
+  buildQaPrompt(j, ref, wt) {
+    return `${j.text}\n${this.contextBlock(j.ctx)}\nYour checkout is at the PR branch; the base branch is origin/dev (see it with git diff origin/dev...HEAD). Do the following:
+1. Read the diff.
+2. Run the project's existing tests (for example npm test). If none exist, say so.
+3. Where tests are missing for the new behavior, add them and commit them with a message that starts with "${ref}:".
+4. Check each acceptance criterion above and say whether it is met.
+Reply with short QA notes: what you ran, what passed, what failed and why. Make the very last line exactly "VERDICT: PASS" if the work meets the acceptance criteria and all tests pass, otherwise "VERDICT: FAIL".`;
+  }
+
+  async runQaJob(j, w) {
+    const p = this.projectById(j.projectId);
+    const t = j.taskId ? this.taskById(j.taskId) : null;
+    const origin = this.jobById(j.qaFor);
+    const ref = t ? this.taskKey(t) : `${p.key} job #${j.n}`;
+    Object.assign(j, { kind: 'qa', status: 'running', workerId: w.id, startedAt: Date.now(), output: '', steps: [], tierApplied: j.tier, model: this.claude.modelFor(j.tier), branch: origin && origin.branch, pr: origin && origin.pr, diff: null });
+    this.jobChanged(j);
+    const ctl = new AbortController();
+    this.controllers.set(j.id, ctl);
+    const step = (label) => { j.steps = [...(j.steps || []), redact(label)].slice(-200); this.jobChanged(j, { persist: false }); };
+    let wt = null;
+    let end = { status: 'failed', error: 'upstream_error' };
+    try {
+      if (!j.branch) throw Object.assign(new Error('The coder job has no branch to test.'), { code: 'no_branch' });
+      wt = await this.repos.createReviewWorktree(p.key, j.branch);
+      j.worktree = wt.dir;
+      step(`Checked out ${j.branch} for testing`);
+      let lastEmit = 0;
+      const res = await this.claude.stream({
+        exe: this.claude.exe(),
+        model: j.model,
+        systemPrompt: qaSystemPrompt(w, ref),
+        prompt: this.buildQaPrompt(j, ref, wt),
+        cwd: wt.dir,
+        signal: ctl.signal,
+        onText: (text) => {
+          if (!j.firstTokenAt) j.firstTokenAt = Date.now();
+          j.output = redact(text).slice(0, MAX_OUTPUT);
+          const now = Date.now();
+          if (now - lastEmit > 150) { lastEmit = now; this.jobChanged(j, { persist: false }); }
+        },
+        onRateLimit: () => { this.lastRateLimit = Date.now(); },
+        code: { tools: CODE_TOOLS, allowedTools: CODE_ALLOWED, disallowedTools: CODE_DENIED, maxTurns: CODE_MAX_TURNS, timeoutMs: CODE_TIMEOUT_MS, env: workerEnv(), onStep: step },
+      });
+      if (!j.firstTokenAt) j.firstTokenAt = Date.now();
+      j.output = redact(res.text || j.output || '').slice(0, MAX_OUTPUT);
+      j.outTok = res.outTok || tok(j.output);
+      if (res.inTok) j.inTok = res.inTok;
+      const q = parseQa(j.output);
+      j.qa = { verdict: q.verdict, notes: q.notes.slice(0, 6000) };
+      const fin = await this.repos.finishWorktree(wt.dir, wt.base, `${ref}: QA tests`);
+      if (fin.commits) {
+        j.diff = { commits: fin.commits, files: fin.files.slice(0, 100), insertions: fin.insertions, deletions: fin.deletions };
+        // Tests QA added join the PR only when the work passes.
+        if (q.verdict === 'pass') { step(`Adding ${fin.commits} QA test commit(s) to ${j.branch}`); await this.repos.pushHead(wt.dir, j.branch); }
+      }
+      end = q.verdict ? { status: 'done' } : { status: 'failed', error: 'no_verdict' };
+    } catch (e) {
+      if (ctl.signal.aborted || e.code === 'cancelled') end = { status: 'cancelled' };
+      else end = { status: 'failed', error: typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'upstream_error', errorDetail: redact(e.message) };
+      if (typeof e.text === 'string' && e.text) j.output = redact(e.text).slice(0, MAX_OUTPUT);
+    }
+    // Clean up before the status flips, so anyone watching a finished job sees a settled board.
+    if (wt) { await this.repos.removeWorktree(p.key, wt.dir).catch(() => {}); j.worktree = null; }
+    Object.assign(j, end);
+    j.finishedAt = Date.now();
+    this.controllers.delete(j.id);
+    this.jobChanged(j);
+    this.onJobFinished(j);
+    this.schedule();
+  }
+
+  // QA is done: pass -> Review, fail -> back to In progress for the original coder. Notes stay on the task.
+  onQaFinished(j, t) {
+    if (!t) return;
+    const w = this.byWorker(j.workerId);
+    const coderJob = this.jobById(j.qaFor);
+    const coder = coderJob && this.byWorker(coderJob.workerId);
+    const verdict = j.status === 'done' && j.qa && j.qa.verdict ? j.qa.verdict : 'error';
+    const notes = verdict === 'error'
+      ? `QA could not finish (${j.status === 'cancelled' ? 'stopped' : j.error || 'no result'}). Passing to Review so a person can look.${j.output ? `\n\n${j.qa ? j.qa.notes : String(j.output).slice(0, 3000)}` : ''}`
+      : j.qa.notes;
+    t.qa = [...(t.qa || []), { job: j.id, n: j.n, verdict, notes, by: w ? w.name : 'QA', coder: coder ? coder.name : '', at: Date.now() }].slice(-MAX_QA_NOTES);
+    if (t.status === 'testing') { // a person may have moved the task meanwhile; leave it where they put it
+      if (verdict === 'fail') Object.assign(t, { status: 'progress', assignee: coder ? coder.id : t.assignee });
+      else t.status = 'review';
+      t.order = Date.now();
+    }
+    t.updatedAt = Date.now();
+    this.changed('tasks');
+    const key = this.taskKey(t);
+    this.emit('notice', verdict === 'fail'
+      ? { kind: 'task-qa-fail', text: `${key} failed QA and is back in In progress${coder ? ` for ${coder.name}` : ''}.` }
+      : { kind: 'task-review', text: `${key} ${verdict === 'pass' ? 'passed QA and ' : ''}is ready for review.` });
   }
 
   stopJob(id) {
@@ -635,7 +788,8 @@ class Engine extends EventEmitter {
     if (!t) return null;
     const p = this.projectById(t.projectId);
     const ctx = [...new Set([...(p ? p.ctx || [] : []), ...(t.ctx || [])])].filter((id) => this.ctxById(id));
-    const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}`;
+    const lastQa = (t.qa || [])[(t.qa || []).length - 1];
+    const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}${lastQa && lastQa.verdict === 'fail' ? `\n\nQA failed the previous attempt. Fix these problems:\n${lastQa.notes}` : ''}`;
     const j = this.createJob(text, t.assignee && this.byWorker(t.assignee) ? t.assignee : 'any', 'default', { ctx, taskId: t.id, projectId: t.projectId, ...extra });
     Object.assign(t, { jobs: [...(t.jobs || []), j.id], status: 'progress', order: Date.now() });
     this.upsert('tasks', t);
@@ -848,7 +1002,7 @@ How to behave:
 - Jobs take a while. After assigning, say who has it and that you can check back. When asked for results, use get_job and summarize the output.
 - Write job texts as clear, self-contained instructions, because the worker sees only that text plus any project context.
 - If a request is ambiguous and a guess would waste work, ask one short question first.
-- Workers have a capability: "text" (writes answers), "code" (edits a project's repository in its own git worktree and commits; the app then opens a pull request into dev), or "pm" (proposes tickets that can be accepted onto the Backlog with accept_tickets). Coding only happens for tasks or jobs in a project whose repo is set up. Hire or update a worker to "code" when coding is needed.
+- Workers have a capability: "text" (writes answers), "code" (edits a project's repository in its own git worktree and commits; the app then opens a pull request into dev), "pm" (proposes tickets that can be accepted onto the Backlog with accept_tickets), or "qa" (tests each coder's PR automatically before the task reaches Review; one is hired automatically if none exists). Coding only happens for tasks or jobs in a project whose repo is set up. Hire or update a worker to "code" when coding is needed.
 - You may merge pull requests into dev when the owner asks. You can never release to prod: that is the owner's "Release to prod" button on the Board.
 
 Right now (${new Date().toLocaleString()}):
@@ -1006,10 +1160,10 @@ const TOOL_SPECS = [
   { name: 'create_project', description: 'Create a project on the board.', input: { name: 'project name', key: '2-5 letter key', description: 'goal, audience, constraints' }, required: ['name'] },
   { name: 'create_task', description: 'Create a task card in a project.', input: { project: 'project key', title: 'short title', description: 'what to produce, with acceptance criteria', priority: Object.keys(PRIO).join(' | '), status: COLS.map((c) => c[0]).join(' | '), assignee: 'worker name' }, required: ['project', 'title'] },
   { name: 'update_task', description: 'Change a task: move columns, re-prioritize, reassign or edit text.', input: { task: 'task key like BLOG-3', title: '', description: '', status: COLS.map((c) => c[0]).join(' | '), priority: Object.keys(PRIO).join(' | '), assignee: 'worker name, or "" for any' }, required: ['task'] },
-  { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then Review when done.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
+  { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then (for coding jobs) Testing while a QA worker verifies the PR, then Review on a pass or back to In progress on a fail.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
   { name: 'search_context', description: 'Search the context library and return short excerpts.', input: { query: 'words to look for' } },
-  { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm"' } },
-  { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm"' }, required: ['worker'] },
+  { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm" | "qa"' } },
+  { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm" | "qa"' }, required: ['worker'] },
   { name: 'retire_worker', description: 'Retire a worker who is not mid-job. Their queued jobs go to any free worker.', input: { worker: 'worker name' }, required: ['worker'] },
   { name: 'set_jobs_at_once', description: 'Set how many jobs run at the same time.', input: { n: '1 | 2 | 3' }, required: ['n'] },
   { name: 'set_project_repo', description: "Give a project a repository (GitHub URL or local folder). The app clones it under the owner's Burrowby folder and makes sure prod and dev branches exist.", input: { project: 'project key', source: 'GitHub URL or local folder path' }, required: ['project', 'source'] },
@@ -1050,4 +1204,4 @@ function parseForemanReply({ structured, text }) {
   };
 }
 
-module.exports = { Engine, SPECIES, TOOL_SPECS, FOREMAN_SCHEMA, parseForemanReply, parseTickets, workerEnv, KINDS, CTX_BUDGET, CODE_ALLOWED, CODE_DENIED };
+module.exports = { Engine, COLS, SPECIES, TOOL_SPECS, FOREMAN_SCHEMA, parseForemanReply, parseTickets, parseQa, workerEnv, KINDS, CTX_BUDGET, CODE_ALLOWED, CODE_DENIED };

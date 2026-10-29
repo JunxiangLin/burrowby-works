@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { Engine, workerEnv, parseTickets } = require('../src/engine');
+const { Engine, COLS, workerEnv, parseTickets, parseQa } = require('../src/engine');
 const { Repos, redact } = require('../src/repos');
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -49,6 +49,8 @@ module.exports = async function codeChecks() {
   const repos = new Repos({ root, appDir, gh: fakeGh });
 
   const codeRuns = [];
+  const qaRuns = [];
+  let qaScript = []; // next QA outcomes: 'pass' (default), 'fail', 'none' (no verdict)
   let foremanScript = [];
   const claude = {
     exe: () => 'claude.exe',
@@ -60,10 +62,27 @@ module.exports = async function codeChecks() {
     },
     async stream(opts) {
       if (!opts.code) return { text: 'Notes.\n```json\n{"tickets":[{"title":"Add login","description":"Users can sign in.","priority":"high"},{"title":"Add logout","description":"Users can sign out.","priority":"low"}]}\n```', stopReason: 'end_turn', inTok: 10, outTok: 10 };
+      if (/QA worker/.test(opts.systemPrompt)) {
+        const outcome = qaScript.shift() || 'pass';
+        qaRuns.push({ ...opts, sawHire: fs.existsSync(path.join(opts.cwd, 'hire.js')), outcome });
+        opts.code.onStep('Ran npm test');
+        let text;
+        if (outcome === 'pass') {
+          fs.writeFileSync(path.join(opts.cwd, 'hire.test.js'), "require('./hire');\n");
+          g(opts.cwd, 'add', '-A');
+          g(opts.cwd, ...ident, 'commit', '-q', '-m', 'DEMO-1: add hire test');
+          text = 'Ran the tests and added hire.test.js. Every criterion is met.\nVERDICT: PASS';
+        } else if (outcome === 'fail') {
+          fs.writeFileSync(path.join(opts.cwd, 'scratch.test.js'), 'x\n'); // uncommitted; must not reach the branch
+          text = 'hire.js ignores the role argument (criterion 2).\nVERDICT: FAIL';
+        } else text = 'I could not tell whether this works.';
+        opts.onText(text);
+        return { text, stopReason: 'end_turn', inTok: 30, outTok: 15 };
+      }
       codeRuns.push(opts);
-      const mode = codeRuns.length; // 1: commits itself, 2: leaves changes uncommitted, 3: changes nothing
+      const mode = codeRuns.length; // 1: commits itself, 2: leaves changes uncommitted, 3-4: changes nothing, 5+: leaves changes
       opts.code.onStep('Read README.md');
-      if (mode <= 2) {
+      if (mode <= 2 || mode >= 5) {
         fs.writeFileSync(path.join(opts.cwd, 'hire.js'), `module.exports = ${mode};\n`);
         opts.code.onStep('Wrote hire.js');
       }
@@ -110,19 +129,80 @@ module.exports = async function codeChecks() {
   assert.strictEqual(j1.diff.files[0].file, 'hire.js');
   assert.strictEqual(j1.diff.insertions, 1);
   assert.ok(j1.steps.some((x) => x.startsWith('Created worktree')) && j1.steps.some((x) => x.startsWith('Opened PR #1')));
-  assert.strictEqual(engine.taskById(t1.id).status, 'review');
   assert.ok(!fs.existsSync(codeRuns[0].cwd), 'worktree removed after the push');
   assert.strictEqual(g(origin, 'rev-parse', 'dev'), g(origin, 'rev-parse', 'prod'), 'agents never touch dev');
 
-  // 2. Uncommitted work is committed by the app; 3. no changes -> failed, no PR.
-  const j2 = engine.sendTask(engine.makeTask(engine.projectById(p.id), { title: 'Second', assignee: 'w_biscuit' }).id);
+  // QA stage, pass path: the PR moves the task to Testing, QA starts by itself, a pass moves it to Review with notes.
+  assert.strictEqual(engine.taskById(t1.id).status, 'testing', 'a coder PR puts the task in Testing');
+  const q1 = engine.jobs.find((x) => x.qaFor === j1.id);
+  assert.ok(q1 && engine.taskById(t1.id).jobs.includes(q1.id), 'QA job queued automatically for the task');
+  await until(q1);
+  assert.strictEqual(q1.status, 'done', q1.errorDetail);
+  assert.strictEqual(q1.kind, 'qa');
+  assert.strictEqual(engine.byWorker(q1.workerId).capability, 'qa', 'a QA worker is hired when the factory has none');
+  assert.ok(qaRuns[0].sawHire && /qa-DEMO-1/.test(qaRuns[0].cwd), 'QA works in a checkout of the PR branch');
+  assert.match(qaRuns[0].systemPrompt, /Never push/);
+  assert.match(qaRuns[0].prompt, /VERDICT: PASS/);
+  assert.strictEqual(engine.taskById(t1.id).status, 'review', 'QA pass moves the task to Review');
+  const n1 = engine.taskById(t1.id).qa[0];
+  assert.strictEqual(n1.verdict, 'pass');
+  assert.match(n1.notes, /Every criterion is met/);
+  assert.ok(!/VERDICT/.test(n1.notes), 'the verdict line is not part of the notes');
+  assert.match(g(origin, 'ls-tree', '-r', '--name-only', j1.branch), /hire\.test\.js/, 'tests QA added join the PR on a pass');
+  assert.ok(!fs.existsSync(qaRuns[0].cwd), 'QA worktree removed');
+
+  // QA fail path: the task goes back to In progress for the original coder, notes attached, nothing pushed.
+  qaScript = ['fail'];
+  const t2 = engine.makeTask(engine.projectById(p.id), { title: 'Second', desc: 'Must honor the role argument.', assignee: 'w_biscuit' });
+  const j2 = engine.sendTask(t2.id);
   await until(j2);
   assert.strictEqual(j2.status, 'done');
-  assert.ok(j2.steps.some((x) => /leftover/.test(x)));
+  assert.ok(j2.steps.some((x) => /leftover/.test(x)), 'uncommitted work is committed by the app');
+  assert.strictEqual(engine.taskById(t2.id).status, 'testing');
+  const q2 = engine.jobs.find((x) => x.qaFor === j2.id);
+  await until(q2);
+  assert.strictEqual(engine.taskById(t2.id).status, 'progress', 'QA fail sends the task back to In progress');
+  assert.strictEqual(engine.taskById(t2.id).assignee, 'w_biscuit', 'back to the original coder');
+  const n2 = engine.taskById(t2.id).qa[0];
+  assert.strictEqual(n2.verdict, 'fail');
+  assert.strictEqual(n2.coder, 'Biscuit');
+  assert.match(n2.notes, /ignores the role argument/);
+  assert.ok(!/scratch\.test\.js/.test(g(origin, 'ls-tree', '-r', '--name-only', j2.branch)), 'a failed QA pushes nothing');
+
+  // 3. No changes -> failed, no PR, no QA. Re-sending a failed task hands the coder the QA notes.
   const j3 = engine.sendTask(engine.makeTask(engine.projectById(p.id), { title: 'Third', assignee: 'w_biscuit' }).id);
   await until(j3);
   assert.strictEqual(j3.status, 'failed');
   assert.strictEqual(j3.error, 'no_changes');
+  assert.ok(!engine.jobs.some((x) => x.qaFor === j3.id), 'no QA without a PR branch');
+  const j2b = engine.sendTask(t2.id);
+  assert.match(j2b.text, /QA failed the previous attempt[\s\S]*ignores the role argument/);
+  await until(j2b);
+
+  // QA that cannot reach a verdict never strands a task in Testing: it goes to Review flagged for a person.
+  qaScript = ['none'];
+  const t4 = engine.makeTask(engine.projectById(p.id), { title: 'Fourth', assignee: 'w_biscuit' });
+  const j4 = engine.sendTask(t4.id);
+  await until(j4);
+  await until(engine.jobs.find((x) => x.qaFor === j4.id));
+  assert.strictEqual(engine.taskById(t4.id).status, 'review');
+  assert.strictEqual(engine.taskById(t4.id).qa[0].verdict, 'error');
+  assert.match(engine.taskById(t4.id).qa[0].notes, /QA could not finish/);
+
+  // A direct job tied to a task goes through QA too.
+  const t5 = engine.makeTask(engine.projectById(p.id), { title: 'Fifth' });
+  const j5 = engine.createJob('Fifth change', 'w_biscuit', 'default', { projectId: p.id, taskId: t5.id });
+  await until(j5);
+  assert.strictEqual(j5.status, 'done', j5.errorDetail);
+  assert.strictEqual(engine.taskById(t5.id).status, 'testing');
+  await until(engine.jobs.find((x) => x.qaFor === j5.id));
+  assert.strictEqual(engine.taskById(t5.id).status, 'review');
+
+  // The column order and verdict parsing.
+  assert.deepStrictEqual(COLS.map((c) => c[0]), ['backlog', 'todo', 'progress', 'testing', 'review', 'done'], 'Testing sits between In progress and Review');
+  assert.deepStrictEqual(parseQa('Looks fine.\nVERDICT: PASS'), { verdict: 'pass', notes: 'Looks fine.' });
+  assert.strictEqual(parseQa('Broke.\nverdict: fail - see above').verdict, 'fail');
+  assert.strictEqual(parseQa('no verdict here').verdict, null);
 
   // A text worker on the same project still writes text.
   const jt = engine.createJob('Explain the repo', 'w_mochi', 'default', { projectId: p.id });
@@ -134,7 +214,7 @@ module.exports = async function codeChecks() {
   await assert.rejects(engine.mergePr('DEMO', 99), /Only PRs into dev/);
   g(origin, 'branch', '-f', 'dev', j1.branch); // stand-in for GitHub merging the PR
   const rel = await engine.releaseToProd('DEMO');
-  assert.ok(rel.released && rel.commits === 1);
+  assert.ok(rel.released && rel.commits === 2); // the coder's commit plus the test QA added
   assert.strictEqual(g(origin, 'rev-parse', 'prod'), g(origin, 'rev-parse', 'dev'));
 
   // Safety: no worktrees overlapping the folder the app runs from, or outside the Burrowby root.
@@ -153,8 +233,8 @@ module.exports = async function codeChecks() {
   await until(jp);
   assert.strictEqual(jp.kind, 'pm');
   assert.strictEqual(jp.proposals.length, 2);
-  assert.deepStrictEqual(engine.acceptProposals(jp.id, [0]), ['DEMO-4']);
-  assert.strictEqual(engine.findTask('DEMO-4').status, 'backlog');
+  assert.deepStrictEqual(engine.acceptProposals(jp.id, [0]), ['DEMO-6']);
+  assert.strictEqual(engine.findTask('DEMO-6').status, 'backlog');
 
   // Foreman staff tools: hire, update, jobs at once, list PRs; then stop all.
   foremanScript = [
