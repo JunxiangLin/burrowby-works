@@ -898,7 +898,7 @@ function makeProject(o) {
 }
 function makeTask(p, o) {
   p.seq = Math.max(p.seq || 0, ...tasks.filter(t => t.projectId === p.id).map(t => t.n || 0)) + 1; saveProject(p);
-  const t = { id: uid('t_'), projectId: p.id, n: p.seq, title: o.title, desc: o.desc || '', status: o.status || 'todo', priority: o.priority || 'med', assignee: o.assignee || '', labels: o.labels || [], due: o.due || '', ctx: o.ctx || [], jobs: [], order: Date.now() + Math.random(), createdAt: Date.now() };
+  const t = { id: uid('t_'), projectId: p.id, n: p.seq, title: o.title, desc: o.desc || '', blockedReason: String(o.blockedReason || '').replace(/\s+/g, ' ').trim().slice(0, 140), status: o.status || 'todo', priority: o.priority || 'med', assignee: o.assignee || '', labels: o.labels || [], due: o.due || '', ctx: o.ctx || [], jobs: [], order: Date.now() + Math.random(), createdAt: Date.now() };
   tasks.push(t); saveTask(t); return t;
 }
 async function sendTask(t) {
@@ -983,9 +983,10 @@ function card(t) {
   if (j && isActive(j)) jp = `<span class="pill" style="--c:${j.status === 'queued' ? 'var(--s-wait)' : j.firstTokenAt ? 'var(--s-write)' : 'var(--s-think)'}">${j.status === 'queued' ? 'queued' : j.firstTokenAt ? 'writing' : 'thinking'} #${j.n}</span>`;
   else if (j && j.status === 'failed' && t.status !== 'done') jp = `<span class="pill" style="--c:var(--crit)">run failed</span>`;
   const nCtx = (t.ctx || []).length;
-  return `<div class="tcard" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
+  const blocked = t.blockedReason ? `<span class="blk" title="${esc(t.blockedReason)}">Blocked: ${esc(t.blockedReason)}</span>` : '';
+  return `<div class="tcard${t.blockedReason ? ' blocked' : ''}" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
     <span class="tk">${esc(taskKey(t))} · ${PRIO[t.priority] ? PRIO[t.priority][0] : 'Medium'}</span>
-    <span class="tt">${esc(t.title)}</span>
+    <span class="tt">${esc(t.title)}</span>${blocked}
     <span class="tf">${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
   </div>`;
 }
@@ -1030,6 +1031,7 @@ function openTask(t, isNew) {
   $('tdStatus').innerHTML = selOpts(COLS, t.status || 'todo');
   $('tdPrio').innerHTML = selOpts(Object.entries(PRIO).map(([k, v]) => [k, v[0]]), t.priority || 'med');
   $('tdAssignee').innerHTML = selOpts([['', 'Any free worker'], ...workers.map(w => [w.id, w.name])], t.assignee || '');
+  $('tdBlocked').value = t.blockedReason || '';
   $('tdDue').value = t.due || ''; $('tdLabels').value = (t.labels || []).join(', ');
   paintTaskCtx(); paintQa(); $('tdDelete').hidden = isNew;
   paintTaskRuns(true);
@@ -1114,7 +1116,7 @@ function saveTaskForm() {
   const t = editingTask, p = t && projectById(t.projectId); if (!p) return null;
   const title = $('tdTitle').value.trim();
   if (!title) { toast('Give the task a title.'); $('tdTitle').focus(); return null; }
-  const f = { title: title.slice(0, 140), desc: $('tdDesc').value.trim(), status: $('tdStatus').value, priority: $('tdPrio').value, assignee: $('tdAssignee').value, due: $('tdDue').value,
+  const f = { title: title.slice(0, 140), desc: $('tdDesc').value.trim(), status: $('tdStatus').value, priority: $('tdPrio').value, assignee: $('tdAssignee').value, due: $('tdDue').value, blockedReason: $('tdBlocked').value,
     labels: $('tdLabels').value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8), ctx: [...$('tdCtx').querySelectorAll('input[data-c]:checked:not(:disabled)')].map(i => i.dataset.c) };
   if (f.status === 'done' && !taskIsNew && f.status !== t.status && !canFinish(t, f.desc)) { toast('Mark every acceptance criterion pass, or use the owner override, before Done.'); $('tdStatus').value = t.status; return null; }
   let real;

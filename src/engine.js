@@ -32,7 +32,7 @@ const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
 const QA_SPECIALTY = 'QA tester. Reads the diff, runs the existing tests, adds tests where they are missing, checks every acceptance criterion, and reports plainly what passed and what failed.';
 const MAX_QA_NOTES = 8;
 const MAX_AUDIT = 1000; // per-task audit entries kept (a safety cap only; nothing edits or removes entries)
-const AUDIT_TYPES = ['created', 'status', 'assignee', 'qa', 'retry'];
+const AUDIT_TYPES = ['created', 'status', 'assignee', 'qa', 'retry', 'blocked'];
 const normAudit = (a) => ({ at: Number(a.at) || 0, type: AUDIT_TYPES.includes(a.type) ? a.type : 'status', actor: String(a.actor || 'unknown').slice(0, 60), text: String(a.text || '').slice(0, 500) });
 
 // Coding jobs: the only tools a worker agent gets, and the shell commands it may run.
@@ -166,7 +166,9 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+// A ticket is blocked exactly when it has a reason: one line, at most 140 characters.
+const normReason = (r) => String(r || '').replace(/\s+/g, ' ').trim().slice(0, 140);
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), blockedReason: normReason(t.blockedReason), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -952,6 +954,14 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   logAudit(t, type, actor, text) {
     t.audit = [...(t.audit || []), this.auditEntry(type, actor, text)];
   }
+  // Logs a block change given the previous reason and the task's current one.
+  logBlockChange(t, prevReason, actor) {
+    const was = normReason(prevReason), now = t.blockedReason || '';
+    if (was === now) return;
+    if (!now) this.logAudit(t, 'blocked', actor, `Unblocked (was: ${was})`);
+    else if (!was) this.logAudit(t, 'blocked', actor, `Blocked: ${now}`);
+    else this.logAudit(t, 'blocked', actor, `Block reason changed: ${was} -> ${now}`);
+  }
   auditEntries(t) { return [...(t.audit || [])].reverse().sort((a, b) => b.at - a.at); } // newest first; ties keep latest-appended first
   auditText(taskId) {
     const t = this.taskById(taskId);
@@ -978,8 +988,11 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       if (prev !== obj) {
         if (o.status !== prev.status) o.audit.push(this.auditEntry('status', 'You', `Status: ${this.colLabel(prev.status)} -> ${this.colLabel(o.status)}`));
         if (o.assignee !== prev.assignee) o.audit.push(this.auditEntry('assignee', 'You', `Assignee: ${this.workerLabel(prev.assignee)} -> ${this.workerLabel(o.assignee)}`));
+        this.logBlockChange(o, prev.blockedReason, 'You');
       }
     }
+    // A task first saved by the UI with a reason (makeTask logs its own) gets its block logged here.
+    if (coll === 'tasks' && i < 0 && o.blockedReason && !o.audit.some((a) => a.type === 'blocked')) this.logBlockChange(o, '', 'You');
     // Repo settings change only through setProjectRepo, never through a plain save.
     if (coll === 'projects') { o.repo = i >= 0 ? list[i].repo : null; o.lastRelease = i >= 0 ? list[i].lastRelease : null; }
     if (i >= 0) list[i] = o;
@@ -998,7 +1011,10 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   makeTask(p, o) {
     p.seq = Math.max(p.seq || 0, ...this.tasks.filter((t) => t.projectId === p.id).map((t) => t.n || 0)) + 1;
     this.upsert('projects', p);
-    return this.upsert('tasks', { id: uid('t_'), projectId: p.id, n: p.seq, title: o.title, desc: o.desc || '', status: o.status || 'todo', priority: o.priority || 'med', assignee: o.assignee || '', labels: o.labels || [], due: o.due || '', ctx: o.ctx || [], jobs: [], audit: [this.auditEntry('created', o.actor || 'You', `Created in ${this.colLabel(o.status || 'todo')}`)], order: Date.now() + Math.random(), createdAt: Date.now() });
+    const reason = normReason(o.blockedReason);
+    const audit = [this.auditEntry('created', o.actor || 'You', `Created in ${this.colLabel(o.status || 'todo')}`)];
+    if (reason) audit.push(this.auditEntry('blocked', o.actor || 'You', `Blocked: ${reason}`));
+    return this.upsert('tasks', { id: uid('t_'), projectId: p.id, n: p.seq, title: o.title, desc: o.desc || '', blockedReason: reason, status: o.status || 'todo', priority: o.priority || 'med', assignee: o.assignee || '', labels: o.labels || [], due: o.due || '', ctx: o.ctx || [], jobs: [], audit, order: Date.now() + Math.random(), createdAt: Date.now() });
   }
   sendTask(taskId, extra = {}) {
     const t = this.taskById(taskId);
@@ -1117,7 +1133,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         const title = String(i.title || '').trim().slice(0, 140);
         if (!title) throw new Error('title is required');
         const w = i.assignee ? E.findWorker(i.assignee) : null;
-        const t = E.makeTask(p, { title, desc: String(i.description || '').slice(0, 6000), priority: PRIO[i.priority] ? i.priority : 'med', status: COLS.some((c) => c[0] === i.status) ? i.status : 'todo', assignee: w ? w.id : '' });
+        const t = E.makeTask(p, { title, desc: String(i.description || '').slice(0, 6000), priority: PRIO[i.priority] ? i.priority : 'med', status: COLS.some((c) => c[0] === i.status) ? i.status : 'todo', assignee: w ? w.id : '', blockedReason: i.blocked_reason, actor: 'Foreman' });
         msg.actions.push(`${E.taskKey(t)} created`);
         return { key: E.taskKey(t) };
       },
@@ -1129,6 +1145,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         if (i.status === 'done' && t.status !== 'done' && /^\s*(#+\s*)?acceptance/im.test(t.desc || '') && !(t.acceptance && (t.acceptance.override || (t.acceptance.items || []).length && t.acceptance.items.every((x) => x.result === 'pass')))) throw new Error(`${E.taskKey(t)} has acceptance criteria that are not all marked pass. The owner must complete the QA checklist or override it before it can be Done.`);
         if (COLS.some((c) => c[0] === i.status) && i.status !== t.status) { E.logAudit(t, 'status', 'Foreman', `Status: ${E.colLabel(t.status)} -> ${E.colLabel(i.status)}`); t.status = i.status; t.order = Date.now(); }
         if (PRIO[i.priority]) t.priority = i.priority;
+        if (i.blocked_reason != null) { const prevReason = t.blockedReason; t.blockedReason = normReason(i.blocked_reason); E.logBlockChange(t, prevReason, 'Foreman'); }
         if (i.assignee != null) { const w = E.findWorker(i.assignee); const next = w ? w.id : ''; if (next !== t.assignee) E.logAudit(t, 'assignee', 'Foreman', `Assignee: ${E.workerLabel(t.assignee)} -> ${E.workerLabel(next)}`); t.assignee = next; }
         E.upsert('tasks', t);
         msg.actions.push(`${E.taskKey(t)} updated`);
@@ -1378,8 +1395,8 @@ const TOOL_SPECS = [
   { name: 'list_projects', description: 'List projects with keys and task counts per column.', input: {} },
   { name: 'list_tasks', description: 'List tasks in a project, optionally one status.', input: { project: 'project key', status: COLS.map((c) => c[0]).join(' | ') }, required: ['project'] },
   { name: 'create_project', description: 'Create a project on the board.', input: { name: 'project name', key: '2-5 letter key', description: 'goal, audience, constraints' }, required: ['name'] },
-  { name: 'create_task', description: 'Create a task card in a project.', input: { project: 'project key', title: 'short title', description: 'what to produce, with acceptance criteria', priority: Object.keys(PRIO).join(' | '), status: COLS.map((c) => c[0]).join(' | '), assignee: 'worker name' }, required: ['project', 'title'] },
-  { name: 'update_task', description: 'Change a task: move columns, re-prioritize, reassign or edit text.', input: { task: 'task key like BLOG-3', title: '', description: '', status: COLS.map((c) => c[0]).join(' | '), priority: Object.keys(PRIO).join(' | '), assignee: 'worker name, or "" for any' }, required: ['task'] },
+  { name: 'create_task', description: 'Create a task card in a project.', input: { project: 'project key', title: 'short title', description: 'what to produce, with acceptance criteria', priority: Object.keys(PRIO).join(' | '), status: COLS.map((c) => c[0]).join(' | '), assignee: 'worker name', blocked_reason: 'optional one-line reason; marks the task blocked' }, required: ['project', 'title'] },
+  { name: 'update_task', description: 'Change a task: move columns, re-prioritize, reassign or edit text.', input: { task: 'task key like BLOG-3', title: '', description: '', status: COLS.map((c) => c[0]).join(' | '), priority: Object.keys(PRIO).join(' | '), assignee: 'worker name, or "" for any', blocked_reason: 'one-line reason to mark the task blocked, or "" to unblock' }, required: ['task'] },
   { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then (for coding jobs) Testing while a QA worker verifies the PR, then Review on a pass or back to In progress on a fail.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
   { name: 'search_context', description: 'Search the context library and return short excerpts.', input: { query: 'words to look for' } },
   { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm" | "qa"' } },
