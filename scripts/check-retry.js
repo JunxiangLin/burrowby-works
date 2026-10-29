@@ -39,6 +39,12 @@ const fakeClaude = {
   assert.strictEqual(r2.retryOf, r1.id);
   assert.strictEqual(engine.jobs.length, before + 2);
   assert.strictEqual(engine.retryJob('nope'), null);
+  const snap = JSON.stringify(orig);
+  const ok = engine.createJob('fine', w.id, 'default');
+  ok.status = 'done';
+  assert.strictEqual(engine.retryJob(ok.id), null, 'non-failed jobs cannot be retried');
+  engine.retryJob(orig.id);
+  assert.strictEqual(JSON.stringify(orig), snap, 'original job unchanged by retry');
   console.log('OK: retry creates new job, same inputs, retry count');
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

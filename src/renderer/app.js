@@ -673,7 +673,11 @@ function paintJobActions() {
   const b = [];
   if (j.output) b.push('<button class="btn primary small" type="button" data-act="copy">Copy output</button>');
   if (isActive(j)) b.push(`<button class="btn small" type="button" data-act="stop">${j.status === 'queued' ? 'Cancel' : 'Stop'}</button>`);
-  else b.push(`<button class="btn small" type="button" data-act="retry">${j.status === 'failed' ? 'Retry' : 'Run again'}</button>`, '<button class="btn small danger" type="button" data-act="delete">Delete</button>');
+  else {
+    // Retry is offered on failed jobs only.
+    if (j.status === 'failed') b.push('<button class="btn small" type="button" data-act="retry">Retry</button>');
+    b.push('<button class="btn small danger" type="button" data-act="delete">Delete</button>');
+  }
   $('jdActions').innerHTML = b.join('');
 }
 function renderWorkers() {
@@ -794,7 +798,8 @@ $('jobDetail').addEventListener('click', async e => {
   } else if (a.dataset.act === 'stop') {
     mergeJob(await api.stopJob(j.id));
   } else if (a.dataset.act === 'retry') {
-    const n = mergeJob(await api.retryJob(j.id)); openJob(n.id); return;
+    const r = await api.retryJob(j.id); if (!r) { toast('Only failed jobs can be retried.'); return; }
+    const n = mergeJob(r); openJob(n.id); return;
   } else if (a.dataset.act === 'delete') {
     jobs = jobs.filter(x => x !== j); store.deleteJob(j); selJob = null;
   }

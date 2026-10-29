@@ -975,7 +975,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
 
   retryJob(id) {
     const j = this.jobById(id);
-    if (!j) return null;
+    if (!j || j.status !== 'failed') return null; // only failed jobs can be retried
     // A retry is a brand-new job (so it gets its own history entry) with the same
     // inputs; it links back to the job it retries and carries the running retry count.
     const nj = this.createJob(j.text, j.workerId && this.byWorker(j.workerId) ? j.workerId : 'any', j.tier, { ctx: j.ctx, projectId: j.projectId, taskId: j.taskId, retryOf: j.id, retries: (j.retries || 0) + 1 });
