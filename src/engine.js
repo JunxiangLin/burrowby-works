@@ -6,6 +6,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const { redact } = require('./repos');
+const { searchContext, readContext, createContext, applyContextBlocks, WORKER_CONTEXT_INSTRUCTIONS } = require('./context-api');
 
 // ---------- constants (from the artifact) ----------
 const SPECIES = ['bunny', 'cat', 'bear', 'frog', 'chick', 'axolotl'];
@@ -24,9 +25,9 @@ const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', fa
 const MAX_CONCURRENCY = 12;
 const validConc = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_CONCURRENCY;
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
-const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
+const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail', 'contextCreated',
   'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'retryOf', 'retries', 'needsReview', 'formatRetried'];
-const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
+const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'read_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
 const QA_SPECIALTY = 'QA tester. Reads the diff, runs the existing tests, adds tests where they are missing, checks every acceptance criterion, and reports plainly what passed and what failed.';
@@ -428,7 +429,7 @@ class Engine extends EventEmitter {
     if (kind === 'code') return this.runCodeJob(j, w);
     if (kind === 'qa') return this.runQaJob(j, w);
     j.kind = kind;
-    const prompt = this.buildPrompt(j, w) + (kind === 'pm' ? PM_INSTRUCTIONS : '');
+    const prompt = this.buildPrompt(j, w) + (kind === 'pm' ? PM_INSTRUCTIONS : '') + (kind === 'text' && (j.projectId || j.taskId) ? WORKER_CONTEXT_INSTRUCTIONS : '');
     Object.assign(j, { status: 'running', workerId: w.id, startedAt: Date.now(), output: '', inTok: tok(prompt), tierApplied: j.tier, model: this.claude.modelFor(j.tier) });
     this.jobChanged(j);
     const ctl = new AbortController();
@@ -462,6 +463,13 @@ class Engine extends EventEmitter {
       if (res.stopReason === 'refusal') { j.status = 'failed'; j.error = 'refused'; }
       else if (!j.output.trim()) { j.status = 'failed'; j.error = 'empty_completion'; }
       else j.status = 'done';
+      if (j.kind === 'text' && j.status === 'done' && /```context-entry/.test(j.output)) {
+        // BWI-48: entries the worker wrote for the Context library are saved and stripped from the visible output.
+        const r = applyContextBlocks(this, j, j.output);
+        j.output = r.output || j.output;
+        if (r.made.length) j.contextCreated = r.made.map((m) => m.id);
+        if (r.errors.length) j.errorDetail = `Context entry not saved: ${r.errors.join('; ')}`;
+      }
       if (j.kind === 'pm' && j.status === 'done') {
         let v = validateTickets(j.output);
         if (!v.ok) {
@@ -1262,8 +1270,13 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         return { stopped: n };
       },
       search_context(i) {
-        const q = String(i.query || '').toLowerCase();
-        return E.contexts.filter((c) => !q || `${c.title} ${(c.tags || []).join(' ')} ${c.content}`.toLowerCase().includes(q)).slice(0, 6).map((c) => ({ title: c.title, type: KINDS[c.kind] || c.kind, approx_tokens: tok(c.content), excerpt: (c.content || '').slice(0, 600) }));
+        return searchContext(E, i).map((c) => ({ ...c, type: KINDS[c.kind] || c.kind, approx_tokens: tok((E.ctxById(c.id) || {}).content) }));
+      },
+      read_context(i) { return readContext(E, i); },
+      create_context(i, msg) {
+        const r = createContext(E, i);
+        msg.actions.push(`Context entry "${r.title}" added to ${r.attached_to}`);
+        return r;
       },
     };
   }
@@ -1439,7 +1452,9 @@ const TOOL_SPECS = [
   { name: 'create_task', description: 'Create a task card in a project.', input: { project: 'project key', title: 'short title', description: 'what to produce, with acceptance criteria', priority: Object.keys(PRIO).join(' | '), status: COLS.map((c) => c[0]).join(' | '), assignee: 'worker name' }, required: ['project', 'title'] },
   { name: 'update_task', description: 'Change a task: move columns, re-prioritize, reassign or edit text.', input: { task: 'task key like BLOG-3', title: '', description: '', status: COLS.map((c) => c[0]).join(' | '), priority: Object.keys(PRIO).join(' | '), assignee: 'worker name, or "" for any' }, required: ['task'] },
   { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then (for coding jobs) Testing while a QA worker verifies the PR, then Review on a pass or back to In progress on a fail.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
-  { name: 'search_context', description: 'Search the context library and return short excerpts.', input: { query: 'words to look for' } },
+  { name: 'search_context', description: 'Search the context library and return short excerpts with ids.', input: { query: 'words to look for', project: 'optional project key to limit to its entries' } },
+  { name: 'read_context', description: 'Read the full content of a context library entry.', input: { id: 'entry id from search_context' }, required: ['id'] },
+  { name: 'create_context', description: 'Create a context library entry attached to a project (later jobs in it carry it) or to one task.', input: { title: 'short title', content: 'entry text', kind: 'note | doc | data | style | snippet', project: 'project key', task: 'task key like BLOG-3 (attaches to the task instead)' }, required: ['title', 'content'] },
   { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm" | "qa"' } },
   { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm" | "qa"' }, required: ['worker'] },
   { name: 'retire_worker', description: 'Retire a worker who is not mid-job. Their queued jobs go to any free worker.', input: { worker: 'worker name' }, required: ['worker'] },
