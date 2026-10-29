@@ -320,12 +320,23 @@ function registerIpc() {
   ipcMain.handle('works:set-repo', safe((_e, projectId, source) => engine.setProjectRepo(projectId, source)));
   ipcMain.handle('works:list-prs', safe((_e, projectId) => engine.listPrs(projectId)));
   ipcMain.handle('works:merge-pr', safe((_e, projectId, number) => engine.mergePr(projectId, number)));
+  ipcMain.handle('works:release-preview', safe((_e, projectId) => engine.releasePreview(projectId)));
   ipcMain.handle('works:release', safe(async (e, projectId) => {
     const p = engine.projectById(projectId);
     if (!p) throw new Error('No such project.');
-    const r = await dialog.showMessageBox(win(e), { type: 'warning', title: 'Release to prod', message: `Release ${p.key} to prod?`, detail: 'This fast-forwards the prod branch on the remote to match dev. Only you can do this; workers and the foreman cannot.', buttons: ['Release', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true });
-    if (r.response !== 0) return { released: false, note: 'Canceled.' };
-    return engine.releaseToProd(projectId);
+    // Always preview against freshly fetched refs, then confirm exactly that.
+    const pv = await engine.releasePreview(projectId);
+    if (pv.diverged) throw new Error(pv.summary);
+    if (!pv.ahead) return { released: false, note: pv.summary };
+    const lines = pv.commits.slice(0, 12).map((c) => `• ${c.sha} ${c.subject}`).join('\n') + (pv.commits.length > 12 ? `\n• …and ${pv.commits.length - 12} more` : '');
+    const r = await dialog.showMessageBox(win(e), {
+      type: 'warning', title: 'Release to prod',
+      message: `Release ${p.key}: ship ${pv.ahead} commit${pv.ahead === 1 ? '' : 's'}${pv.prs.length ? ` (PR${pv.prs.length === 1 ? '' : 's'} ${pv.prs.map((n) => `#${n}`).join(', ')})` : ''} to prod?`,
+      detail: `prod ${pv.prod} → ${pv.dev} (fast-forward to the current dev).\n\n${lines}\n\nOnly you can do this; workers and the foreman cannot.`,
+      buttons: ['Release', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
+    });
+    if (r.response !== 0) return { released: false, note: 'Canceled. Nothing was released.' };
+    return engine.releaseToProd(projectId, pv.devSha);
   }));
   ipcMain.handle('works:repo-info', async () => ({ root: engine.repos.root, appDir: engine.repos.appDir, gh: await engine.repos.ghStatus() }));
 

@@ -23,7 +23,7 @@ const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'qaFor', 'qa'];
+  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
@@ -151,7 +151,7 @@ function normJob(j) {
   return o;
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
-const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo) });
+const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
 const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
@@ -463,6 +463,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     this.controllers.set(j.id, ctl);
     const step = (label) => { j.steps = [...(j.steps || []), redact(label)].slice(-200); this.jobChanged(j, { persist: false }); };
     let wt = null;
+    let ready = false; // auto-merge: checks passed in QA's worktree, merge after cleanup
     let end = { status: 'failed', error: 'upstream_error' };
     try {
       if (!j.branch) throw Object.assign(new Error('The coder job has no branch to test.'), { code: 'no_branch' });
@@ -498,6 +499,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         // Tests QA added join the PR only when the work passes.
         if (q.verdict === 'pass') { step(`Adding ${fin.commits} QA test commit(s) to ${j.branch}`); await this.repos.pushHead(wt.dir, j.branch); }
       }
+      // QA passed: the PR (now with QA's tests) goes through the project's auto-merge step.
+      if (q.verdict === 'pass' && j.pr && p.autoMerge !== false) ready = await this.prepareAutoMerge(j, p, wt, ref, step);
       end = q.verdict ? { status: 'done' } : { status: 'failed', error: 'no_verdict' };
     } catch (e) {
       if (ctl.signal.aborted || e.code === 'cancelled') end = { status: 'cancelled' };
@@ -506,6 +509,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     }
     // Clean up before the status flips, so anyone watching a finished job sees a settled board.
     if (wt) { await this.repos.removeWorktree(p.key, wt.dir).catch(() => {}); j.worktree = null; }
+    if (ready && end.status === 'done') await this.finishAutoMerge(j, p, t, ref, step);
     Object.assign(j, end);
     j.finishedAt = Date.now();
     this.controllers.delete(j.id);
@@ -514,7 +518,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     this.schedule();
   }
 
-  // QA is done: pass -> Review, fail -> back to In progress for the original coder. Notes stay on the task.
+  // QA is done: fail -> back to In progress for the original coder; pass -> Done if auto-merge merged
+  // the PR (finishAutoMerge already moved the task), otherwise Review. Notes stay on the task.
   onQaFinished(j, t) {
     if (!t) return;
     const w = this.byWorker(j.workerId);
@@ -533,6 +538,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     t.updatedAt = Date.now();
     this.changed('tasks');
     const key = this.taskKey(t);
+    if (j.merge && j.merge.status === 'merged') return; // finishAutoMerge already announced it
     this.emit('notice', verdict === 'fail'
       ? { kind: 'task-qa-fail', text: `${key} failed QA and is back in In progress${coder ? ` for ${coder.name}` : ''}.` }
       : { kind: 'task-review', text: `${key} ${verdict === 'pass' ? 'passed QA and ' : ''}is ready for review.` });
@@ -617,8 +623,14 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         } else {
           j.prError = 'The project remote is not on GitHub, so no PR was opened. The branch was pushed.';
         }
+        // Auto-merge (per project, on by default): test the merge with dev in the
+        // worktree, then let the app merge the PR into dev. Never touches prod.
+        const qaNext = this.qaWillRun(t, p);
+        if (qaNext && j.pr) step(`Handing over to QA${p.autoMerge !== false ? '; auto-merge runs after QA passes' : ''}`);
+        const ready = j.pr && p.autoMerge !== false && !qaNext ? await this.prepareAutoMerge(j, p, wt, ref, step) : false;
         await this.repos.removeWorktree(key, wt.dir).catch(() => {});
         j.worktree = null;
+        if (ready) await this.finishAutoMerge(j, p, t, ref, step);
         j.status = 'done';
       }
     } catch (e) {
@@ -631,6 +643,61 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     this.jobChanged(j);
     this.onJobFinished(j);
     this.schedule();
+  }
+
+  // Mirrors onJobFinished + startQa: a coder's task-bound PR goes to QA when a QA worker exists or can be hired.
+  qaWillRun(t, p) {
+    return !!(t && ['backlog', 'todo', 'progress'].includes(t.status) && this.repoReady(p)
+      && (this.workers.some((w) => w.capability === 'qa') || this.workers.length < MAX_WORKERS));
+  }
+
+  blockMerge(j, ref, reason, step, extra = {}) {
+    j.merge = { status: 'blocked', reason, at: Date.now(), ...extra };
+    step(`Left PR #${j.pr.number} open: ${reason}`);
+    this.emit('notice', { kind: 'job', job: j.id, text: `PR #${j.pr.number} for ${ref} needs you: ${reason}.` });
+    return false;
+  }
+
+  // Returns true when the PR is ready to merge: no conflict with dev, checks pass.
+  async prepareAutoMerge(j, p, wt, ref, step) {
+    try {
+      step('Auto-merge: merging the latest dev into the worktree to test the result');
+      const m = await this.repos.mergeDevInto(wt.dir);
+      if (m.conflict) return this.blockMerge(j, ref, `conflicts with dev${m.files.length ? ` in ${m.files.slice(0, 5).join(', ')}` : ''}`, step);
+      const cmd = (p.checkCmd || '').trim() || this.repos.detectCheck(wt.dir);
+      if (!cmd) return this.blockMerge(j, ref, 'no check command (set one in the project settings)', step);
+      step(`Running checks: ${cmd}`);
+      const check = await this.repos.runCheck(wt.dir, cmd, workerEnv());
+      const summary = { cmd, ok: check.ok, exitCode: check.exitCode, ms: check.ms, output: check.output };
+      if (!check.ok) return this.blockMerge(j, ref, `checks failed (${cmd}${check.timedOut ? ', timed out' : `, exit ${check.exitCode}`})`, step, { check: summary });
+      step(`Checks passed: ${cmd} (${fmtDur(check.ms)})`);
+      j.merge = { status: 'checking', check: summary };
+      return true;
+    } catch (e) {
+      return this.blockMerge(j, ref, `could not test the merge: ${redact(e.message)}`, step);
+    }
+  }
+
+  async finishAutoMerge(j, p, t, ref, step) {
+    const check = j.merge && j.merge.check;
+    try {
+      const info = await this.repos.waitMergeable(p.key, j.pr.number);
+      if (!info || info.mergeable !== 'MERGEABLE') {
+        return this.blockMerge(j, ref, info && info.mergeable === 'CONFLICTING' ? 'GitHub reports a conflict with dev' : `GitHub says it isn't mergeable yet (${(info && (info.mergeStateStatus || info.mergeable)) || 'unknown'})`, step, { check });
+      }
+      await this.repos.mergePr(p.key, j.pr.number);
+      j.pr = { ...j.pr, merged: true };
+      j.merge = { status: 'merged', at: Date.now(), check };
+      for (const x of this.jobs) if (x !== j && x.pr && x.pr.number === j.pr.number && x.projectId === j.projectId) { x.pr = { ...x.pr, merged: true }; this.jobChanged(x); }
+      step(`Merged PR #${j.pr.number} into dev`);
+      // Merged into dev with checks passing: the task is done. The owner's gate is
+      // Release to prod, which lists exactly the PRs it will ship.
+      const cur = t && this.taskById(t.id); // t may be stale if a window saved the task meanwhile
+      if (cur) { Object.assign(cur, { status: 'done', order: Date.now() }); this.upsert('tasks', cur); }
+      this.emit('notice', { kind: 'job', job: j.id, text: `${ref}: checks passed and PR #${j.pr.number} is merged into dev.` });
+    } catch (e) {
+      this.blockMerge(j, ref, `merge failed: ${redact(e.message)}`, step, { check });
+    }
   }
 
   buildCodePrompt(j, w, ref, wt) {
@@ -671,7 +738,20 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     for (const j of this.jobs) if (j.pr && j.pr.number === Number(number) && j.projectId === p.id) { j.pr = { ...j.pr, merged: true }; this.jobChanged(j); }
     return r;
   }
-  async releaseToProd(projectRef) { const p = this.repoProject(projectRef); return this.repos.releaseToProd(p.key); }
+  async releasePreview(projectRef) { const p = this.repoProject(projectRef); return this.repos.releasePreview(p.key); }
+  // Owner-only (the Board's button): fast-forward prod to the previewed dev commit.
+  async releaseToProd(projectRef, sha) {
+    const p = this.repoProject(projectRef);
+    const preview = await this.repos.releasePreview(p.key);
+    if (preview.diverged) throw new Error(preview.summary);
+    if (!preview.ahead) return { released: false, note: preview.summary, preview };
+    const r = await this.repos.release(p.key, sha || preview.devSha);
+    if (r.released) {
+      p.lastRelease = { sha: r.sha, from: r.from, commits: r.commits, prs: preview.prs, at: Date.now() };
+      this.changed('projects');
+    }
+    return { ...r, prs: preview.prs };
+  }
 
   // ---------- PM proposals ----------
   acceptProposals(jobRef, picks) {
@@ -764,7 +844,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     const list = this[coll];
     const i = list.findIndex((x) => x.id === o.id);
     // Repo settings change only through setProjectRepo, never through a plain save.
-    if (coll === 'projects') o.repo = i >= 0 ? list[i].repo : null;
+    if (coll === 'projects') { o.repo = i >= 0 ? list[i].repo : null; o.lastRelease = i >= 0 ? list[i].lastRelease : null; }
     if (i >= 0) list[i] = o;
     else list.push(o);
     this.changed(coll);
@@ -865,7 +945,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       get_job(i) {
         const j = E.jobByN(i.job);
         if (!j) throw new Error(`No job #${i.job}`);
-        return { job: j.n, kind: j.kind || 'text', status: STATUS_LABEL[j.status], worker: (E.byWorker(j.workerId || j.pref) || {}).name || 'any', text: j.text.slice(0, 300), run_time: j.startedAt ? fmtDur(E.runMs(j)) : null, error: j.error || null, branch: j.branch || null, pr: j.pr ? j.pr.url : null, pr_error: j.prError || null, diff: j.diff ? { files: j.diff.files.length, insertions: j.diff.insertions, deletions: j.diff.deletions } : null, proposed_tickets: j.proposals || null, output: (j.output || '').slice(0, 4000) || null };
+        return { job: j.n, kind: j.kind || 'text', auto_merge: j.merge ? { status: j.merge.status, reason: j.merge.reason || null } : null, status: STATUS_LABEL[j.status], worker: (E.byWorker(j.workerId || j.pref) || {}).name || 'any', text: j.text.slice(0, 300), run_time: j.startedAt ? fmtDur(E.runMs(j)) : null, error: j.error || null, branch: j.branch || null, pr: j.pr ? j.pr.url : null, pr_error: j.prError || null, diff: j.diff ? { files: j.diff.files.length, insertions: j.diff.insertions, deletions: j.diff.deletions } : null, proposed_tickets: j.proposals || null, output: (j.output || '').slice(0, 4000) || null };
       },
       stop_job(i, msg) {
         const j = E.jobByN(i.job);
@@ -876,7 +956,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         return { job: j.n, stopped: true };
       },
       list_projects() {
-        return E.projects.map((p) => ({ key: p.key, name: p.name, description: (p.desc || '').slice(0, 200), repo: p.repo ? { status: p.repo.status, remote: p.repo.url, github: p.repo.github, error: p.repo.error || null } : null, tasks: Object.fromEntries(COLS.map(([k, l]) => [l, E.tasks.filter((t) => t.projectId === p.id && t.status === k).length])) }));
+        return E.projects.map((p) => ({ key: p.key, name: p.name, description: (p.desc || '').slice(0, 200), repo: p.repo ? { status: p.repo.status, remote: p.repo.url, github: p.repo.github, error: p.repo.error || null, auto_merge: p.autoMerge, check_command: p.checkCmd || 'auto-detected' } : null, tasks: Object.fromEntries(COLS.map(([k, l]) => [l, E.tasks.filter((t) => t.projectId === p.id && t.status === k).length])) }));
       },
       list_tasks(i) {
         const p = E.findProject(i.project);
@@ -1002,8 +1082,8 @@ How to behave:
 - Jobs take a while. After assigning, say who has it and that you can check back. When asked for results, use get_job and summarize the output.
 - Write job texts as clear, self-contained instructions, because the worker sees only that text plus any project context.
 - If a request is ambiguous and a guess would waste work, ask one short question first.
-- Workers have a capability: "text" (writes answers), "code" (edits a project's repository in its own git worktree and commits; the app then opens a pull request into dev), "pm" (proposes tickets that can be accepted onto the Backlog with accept_tickets), or "qa" (tests each coder's PR automatically before the task reaches Review; one is hired automatically if none exists). Coding only happens for tasks or jobs in a project whose repo is set up. Hire or update a worker to "code" when coding is needed.
-- You may merge pull requests into dev when the owner asks. You can never release to prod: that is the owner's "Release to prod" button on the Board.
+- Workers have a capability: "text" (writes answers), "code" (edits a project's repository in its own git worktree and commits; the app then opens a pull request into dev), "pm" (proposes tickets that can be accepted onto the Backlog with accept_tickets), or "qa" (tests each coder's PR automatically; one is hired automatically if none exists). Coding only happens for tasks or jobs in a project whose repo is set up. Hire or update a worker to "code" when coding is needed.
+- A coder's task goes In progress -> Testing (a QA worker verifies the PR) -> on a QA pass, if the project's auto-merge is on (the default), the app runs the project's checks and merges the PR into dev and the task goes to Done; if auto-merge is off, checks fail or there is a conflict, the PR stays open and the task goes to Review. On a QA fail the task goes back to In progress with the coder. You may also merge pull requests into dev when the owner asks. You can never release to prod: that is the owner's "Release to prod" button on the Board.
 
 Right now (${new Date().toLocaleString()}):
 Workers:

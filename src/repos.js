@@ -1,7 +1,7 @@
 // Project repositories: managed clones under %USERPROFILE%\Burrowby\projects,
 // per-task git worktrees on feature branches, and the push / PR / merge /
 // release steps. Only the app runs these; worker agents never push.
-const { execFile } = require('child_process');
+const { execFile, exec } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -148,6 +148,57 @@ class Repos {
     return { head, commits, autoCommitted, files, insertions: files.reduce((s, f) => s + f.add, 0), deletions: files.reduce((s, f) => s + f.del, 0) };
   }
 
+  // ---------- auto-merge support ----------
+  // The project's check command: explicit, or `npm run check` / `npm test` from package.json.
+  detectCheck(dir) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const sc = pkg.scripts || {};
+      if (sc.check) return 'npm run check';
+      if (sc.test && !/no test specified/.test(sc.test)) return 'npm test';
+    } catch { /* not a Node project */ }
+    return '';
+  }
+
+  // Merge the latest dev into the worktree locally (never pushed), so a conflict
+  // shows up before GitHub and the check runs on what the merge will produce.
+  async mergeDevInto(dir) {
+    this.assertSafe(dir);
+    await git(dir, 'fetch', 'origin', DEV);
+    try {
+      await run('git', ['-c', 'user.name=Burrowby Works', '-c', 'user.email=burrowby@localhost', 'merge', '--no-ff', '--no-edit', `origin/${DEV}`], { cwd: dir });
+      return { conflict: false };
+    } catch (e) {
+      const files = (await git(dir, 'diff', '--name-only', '--diff-filter=U').catch(() => '')).trim().split('\n').filter(Boolean);
+      await git(dir, 'merge', '--abort').catch(() => {});
+      return { conflict: true, files };
+    }
+  }
+
+  // Run the check command in the worktree. `env` is the scrubbed worker environment:
+  // this runs project code, so it gets no secrets either.
+  runCheck(dir, cmd, env, timeout = 15 * 60 * 1000) {
+    this.assertSafe(dir);
+    const started = Date.now();
+    return new Promise((resolve) => {
+      exec(cmd, { cwd: dir, env, timeout, windowsHide: true, maxBuffer: 20 * 1024 * 1024 }, (err, stdout, stderr) => {
+        const out = redact(`${stdout || ''}${stderr ? `\n${stderr}` : ''}`).trim();
+        resolve({ cmd, ok: !err, exitCode: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: !!(err && err.killed), ms: Date.now() - started, output: out.slice(-4000) });
+      });
+    });
+  }
+
+  // GitHub computes mergeability lazily; poll briefly while it is UNKNOWN.
+  async waitMergeable(key, number, { tries = 10, delayMs = 3000 } = {}) {
+    let info = null;
+    for (let i = 0; i < tries; i++) {
+      info = JSON.parse(await this.gh(['pr', 'view', String(number), '--json', 'mergeable,mergeStateStatus,baseRefName,state'], { cwd: this.clonePath(key), timeout: 30000 }));
+      if (info.mergeable !== 'UNKNOWN') break;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+    return info;
+  }
+
   async push(key, branch) {
     const clone = this.clonePath(key);
     await git(clone, 'push', '-u', 'origin', `refs/heads/${branch}:refs/heads/${branch}`);
@@ -183,15 +234,47 @@ class Repos {
 
   // Owner-only: fast-forward prod to dev on the remote. Refuses if not a fast-forward.
   async releaseToProd(key) {
+    const preview = await this.releasePreview(key);
+    if (preview.diverged) throw new Error(preview.summary);
+    if (!preview.ahead) return { released: false, note: preview.summary, preview };
+    return this.release(key, preview.devSha);
+  }
+
+  // What "Release to prod" would ship, always against freshly fetched remote refs:
+  // the commits in origin/prod..origin/dev and the PRs merged in them.
+  async releasePreview(key) {
     const clone = this.clonePath(key);
     await git(clone, 'fetch', 'origin', '--prune');
-    const dev = (await git(clone, 'rev-parse', `origin/${DEV}`)).trim();
-    const prod = (await git(clone, 'rev-parse', `origin/${PROD}`)).trim();
-    if (dev === prod) return { released: false, note: `${PROD} is already at ${DEV}.` };
-    try { await git(clone, 'merge-base', '--is-ancestor', prod, dev); } catch { throw new Error(`${PROD} has commits that ${DEV} doesn't. Merge ${PROD} into ${DEV} first.`); }
-    const count = Number((await git(clone, 'rev-list', '--count', `${prod}..${dev}`)).trim());
-    await git(clone, 'push', 'origin', `${dev}:refs/heads/${PROD}`);
-    return { released: true, commits: count, sha: dev.slice(0, 7) };
+    const devSha = (await git(clone, 'rev-parse', `origin/${DEV}`)).trim();
+    const prodSha = (await git(clone, 'rev-parse', `origin/${PROD}`)).trim();
+    const count = async (range) => Number((await git(clone, 'rev-list', '--count', range)).trim()) || 0;
+    const ahead = await count(`${prodSha}..${devSha}`); // in dev, not yet in prod
+    const behind = await count(`${devSha}..${prodSha}`); // in prod but not in dev
+    const log = ahead ? (await git(clone, 'log', '--first-parent', '--format=%h%x09%s', `${prodSha}..${devSha}`)).trim().split('\n').filter(Boolean) : [];
+    const commits = log.map((l) => { const [sha, ...rest] = l.split('\t'); return { sha, subject: rest.join('\t') }; });
+    const prs = [...new Set(commits.map((c) => (c.subject.match(/^Merge pull request #(\d+)/) || [])[1]).filter(Boolean).map(Number))];
+    const short = (s) => s.slice(0, 7);
+    const diverged = behind > 0;
+    const summary = diverged
+      ? `${PROD} has ${behind} commit${behind === 1 ? '' : 's'} that ${DEV} doesn't, so a fast-forward release isn't possible. Merge ${PROD} into ${DEV} first.`
+      : ahead
+        ? `${ahead} commit${ahead === 1 ? '' : 's'} on ${DEV} not yet in ${PROD}${prs.length ? ` (PR${prs.length === 1 ? '' : 's'} ${prs.map((n) => `#${n}`).join(', ')})` : ''}.`
+        : `Nothing to release: ${PROD} already has everything in ${DEV} (both at ${short(devSha)}).`;
+    return { devSha, prodSha, dev: short(devSha), prod: short(prodSha), ahead, behind, diverged, prs, commits: commits.slice(0, 30), summary };
+  }
+
+  // Owner-only: fast-forward prod to exactly `sha` (the previewed dev tip). A plain
+  // push is rejected by the remote unless it is a fast-forward.
+  async release(key, sha) {
+    const clone = this.clonePath(key);
+    await git(clone, 'fetch', 'origin', '--prune');
+    const prodSha = (await git(clone, 'rev-parse', `origin/${PROD}`)).trim();
+    try { await git(clone, 'merge-base', '--is-ancestor', sha, `origin/${DEV}`); } catch { throw new Error(`Commit ${sha.slice(0, 7)} is no longer on ${DEV}. Refresh and try again.`); }
+    try { await git(clone, 'merge-base', '--is-ancestor', prodSha, sha); } catch { throw new Error(`${PROD} moved and is no longer behind ${sha.slice(0, 7)}. Refresh and try again.`); }
+    const commits = Number((await git(clone, 'rev-list', '--count', `${prodSha}..${sha}`)).trim()) || 0;
+    if (!commits) return { released: false, note: `Nothing to release: ${PROD} is already at ${sha.slice(0, 7)}.` };
+    await git(clone, 'push', 'origin', `${sha}:refs/heads/${PROD}`);
+    return { released: true, commits, sha: sha.slice(0, 7), from: prodSha.slice(0, 7) };
   }
 }
 

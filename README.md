@@ -122,26 +122,45 @@ The Board header then shows which folder workers can edit, and a **Release to pr
    - the files changed, with + and − lines
    - every step the worker took
 
-### The QA stage
+### The QA stage and auto-merge
 
 The board runs Backlog → To do → In progress → **Testing** → Review → Done. Every coder's work on a task, whether it came from
-**Save and send to factory** or a direct job tied to a task, goes through Testing before Review. There is no manual step:
+**Save and send to factory** or a direct job tied to a task, goes through one pipeline with no manual step:
 
-1. When the coder's branch is pushed, the task moves to **Testing** and a job is queued for a **QA** worker (capability "QA").
-   If the factory has none, one is hired automatically (Mochi if that name is free).
-2. QA checks out the PR branch in its own worktree with the same tool allowlist and no push rights. It reads the diff, runs the
+1. **Testing.** When the coder's branch is pushed and the PR opened, the task moves to **Testing** and a job is queued for a **QA**
+   worker (capability "QA"). If the factory has none, one is hired automatically (Mochi if that name is free).
+2. **QA** checks out the PR branch in its own worktree with the same tool allowlist and no push rights. It reads the diff, runs the
    existing tests, adds tests where they are missing, and checks the task's acceptance criteria. It ends with `VERDICT: PASS` or `VERDICT: FAIL`.
-3. **Pass:** the task moves to **Review**. Tests QA added are pushed to the PR branch.
-4. **Fail:** the task goes back to **In progress** with the original coder as assignee. Nothing from QA is pushed. Send the task to the
+3. **QA fail:** the task goes back to **In progress** with the original coder as assignee. Nothing from QA is pushed. Send the task to the
    factory again and the coder is given the QA notes.
-5. QA notes are kept on the task (drawer → **QA notes**). If QA stops or gives no verdict, the task goes to Review with a note saying so,
-   so it never sits in Testing.
+4. **QA pass:** the tests QA added are pushed to the PR branch. Then, if the project's **auto-merge** setting is on (the default, in
+   the project drawer):
+   1. The app merges the latest `dev` into QA's worktree, locally and never pushed, so conflicts show up early and the check tests
+      the merged result.
+   2. It runs the project's **check command** there, with the same scrubbed environment workers get. Leave the command empty to use
+      `npm run check`, or `npm test`, from `package.json`.
+   3. If the check passes and GitHub reports the PR as mergeable, the app merges it into `dev` with a merge commit, deletes the branch,
+      and moves the task to **Done**. Done because the change is tested, integrated and verified; your gate is Release to prod, which
+      lists exactly the PRs that will ship.
+5. **Review** is where the task goes when a person needs to look:
+   - auto-merge is off, or the project has no check command
+   - the check fails, `dev` conflicts, or GitHub won't merge it. The job detail shows the reason and the tail of the check output,
+     the Control room raises an alert, and the pet tells you.
+   - QA stopped or gave no verdict. A note says so, so a task never sits in Testing.
 
-Text and PM jobs have no PR, so they go straight to Review as before.
+QA notes are kept on the task (drawer → **QA notes**). Coding jobs not tied to a task skip QA and go straight to the auto-merge step.
+Text and PM jobs have no PR, so they go straight to Review as before. `prod` is never touched by any of this.
 
-Merging: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
-Releasing: only the **Release to prod** button on the Board does it, after a confirmation. It fast-forwards `prod` to `dev` on the
-remote, and refuses if `prod` has commits that `dev` doesn't.
+Merging by hand: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
+Releasing: only the **Release to prod** button on the Board does it.
+- **Board status:** a line under the project shows what would ship. It's worked out from freshly fetched `origin/prod..origin/dev`
+  and refreshed every minute: commit count and the PRs merged in them. The button shows the count, for example
+  *Release to prod (4)*, and is disabled when there's nothing to ship.
+- **Confirmation:** clicking fetches again and lists the commits and PRs to confirm.
+- **Release:** it then fast-forwards `prod` to exactly that `dev` commit. `prod` only ever moves forward to an earlier `dev`, so it
+  never gets merge commits of its own.
+- **Refusals:** it refuses, and says why, if `prod` has commits that `dev` doesn't.
+- **Record:** the last release (from → to, PRs, when) is shown on the Board.
 
 ### Safety rails
 

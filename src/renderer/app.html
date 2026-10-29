@@ -109,7 +109,7 @@
               <div><label for="wdSpecies">Species</label><select id="wdSpecies"></select></div>
             </div>
             <label for="wdCap">Capability</label>
-            <select id="wdCap"><option value="text">Text only: writes answers</option><option value="code">Code: edits project repos in a worktree and opens PRs</option><option value="pm">Project manager: proposes tickets</option><option value="qa">QA: tests each coder's PR before Review</option></select>
+            <select id="wdCap"><option value="text">Text only: writes answers</option><option value="code">Code: edits project repos in a worktree and opens PRs</option><option value="pm">Project manager: proposes tickets</option><option value="qa">QA: tests each coder's PR before it merges</option></select>
             <label for="wdSpec">Specialty and instructions</label>
             <textarea id="wdSpec" maxlength="1200" placeholder="What this worker is good at and how it should work"></textarea>
             <div class="actions">
@@ -149,6 +149,7 @@
           <button class="btn primary small" type="button" data-act="new-task">New task</button>
           <p class="desc"><span id="bhDesc"></span> <span class="key" id="bhCtx"></span></p>
           <p class="desc repo-note" id="bhRepo" hidden></p>
+          <p class="desc repo-note" id="bhRelease" hidden></p>
         </div>
         <div class="suggest" id="suggest" hidden></div>
         <div class="cols" id="cols"></div>
@@ -238,6 +239,8 @@
     <label for="pdRepo">Repository <span class="hint">GitHub URL or local folder; the app keeps its own clone</span></label>
     <div class="assign-row"><input id="pdRepo" class="grow" placeholder="https://github.com/you/repo or C:\path\to\repo" spellcheck="false"><button class="btn small" type="button" data-act="set-repo" id="pdRepoBtn">Connect</button></div>
     <p class="hint repo-note" id="pdRepoNote"></p>
+    <div class="assign-row" style="gap:8px;margin-top:6px"><input type="checkbox" id="pdAuto" checked style="width:auto;margin:0"><label for="pdAuto" style="margin:0;text-transform:none;letter-spacing:0;font-weight:600">Auto-merge worker PRs into dev when checks pass</label></div>
+    <label for="pdCheck">Check command <span class="hint">empty = npm run check, or npm test, from package.json</span></label><input id="pdCheck" maxlength="300" placeholder="npm run check" spellcheck="false">
     <div class="actions"><button class="btn primary" type="submit">Save project</button><button class="btn danger" type="button" data-act="delete" id="pdDelete">Delete project</button></div>
   </form>
 </div>

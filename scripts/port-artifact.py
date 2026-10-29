@@ -255,7 +255,7 @@ markup = rep(markup, '<div class="section"><span class="label">Output</span><div
 markup = rep(markup, '<button class="btn small" type="button" data-act="edit-project">Edit project</button>',
              '<button class="btn small" type="button" id="releaseBtn" hidden title="Fast-forward prod to dev. Only you can do this.">Release to prod</button>\n          <button class="btn small" type="button" data-act="edit-project">Edit project</button>')
 markup = rep(markup, '<p class="desc"><span id="bhDesc"></span> <span class="key" id="bhCtx"></span></p>',
-             '<p class="desc"><span id="bhDesc"></span> <span class="key" id="bhCtx"></span></p>\n          <p class="desc repo-note" id="bhRepo" hidden></p>')
+             '<p class="desc"><span id="bhDesc"></span> <span class="key" id="bhCtx"></span></p>\n          <p class="desc repo-note" id="bhRepo" hidden></p>\n          <p class="desc repo-note" id="bhRelease" hidden></p>')
 markup = rep(markup, '<label>Project context <span class="hint">sent with every task in this project</span></label><div class="checks" id="pdCtx"></div>',
              '<label>Project context <span class="hint">sent with every task in this project</span></label><div class="checks" id="pdCtx"></div>\n    <label for="pdRepo">Repository <span class="hint">GitHub URL or local folder; the app keeps its own clone</span></label>\n    <div class="assign-row"><input id="pdRepo" class="grow" placeholder="https://github.com/you/repo or C:\\path\\to\\repo" spellcheck="false"><button class="btn small" type="button" data-act="set-repo" id="pdRepoBtn">Connect</button></div>\n    <p class="hint repo-note" id="pdRepoNote"></p>')
 css += """
@@ -337,16 +337,41 @@ js = rep(js, "  renderSuggest(); renderCols();\n}", r"""  const note = $('bhRepo
     ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\worktrees\\${p.key} on feature/${p.key}-* branches cut from dev · PRs go into dev; only you release dev → prod.`
     : r.status === 'setting-up' ? `Setting up the repository from ${r.source}…` : `Repository problem: ${r.error}`;
   $('releaseBtn').hidden = !(r && r.status === 'ready');
+  paintRelease(p);
   renderSuggest(); renderCols();
 }
 let repoRoot = '%USERPROFILE%\\Burrowby';
 api.repoInfo().then(i => { repoRoot = i.root; if (view === 'board') renderBoard(); }).catch(() => {});
+// Release status: what "Release to prod" would ship, from freshly fetched refs
+// (refreshed at most every 60 s, and right after a release), plus the last release.
+const releaseInfo = new Map(); // project id -> { at, preview | error }
+function paintRelease(p) {
+  const el = $('bhRelease'), btn = $('releaseBtn'), r = p.repo;
+  if (!r || r.status !== 'ready') { el.hidden = true; return; }
+  const info = releaseInfo.get(p.id);
+  if (!info || Date.now() - info.at > 60e3) refreshRelease(p.id);
+  const last = p.lastRelease ? ` · Last release ${esc(p.lastRelease.from)} → ${esc(p.lastRelease.sha)}${p.lastRelease.prs && p.lastRelease.prs.length ? ` (${p.lastRelease.prs.map(n => `#${n}`).join(', ')})` : ''}, ${ago(p.lastRelease.at)}` : '';
+  const pv = info && info.preview;
+  el.hidden = false;
+  el.innerHTML = (info && info.error ? `Couldn't check what would ship: ${esc(info.error)}` : pv ? esc(pv.summary) : 'Checking what would ship…') + last;
+  btn.textContent = pv && pv.ahead && !pv.diverged ? `Release to prod (${pv.ahead})` : 'Release to prod';
+  btn.disabled = !!(pv && (!pv.ahead || pv.diverged));
+  btn.title = pv ? pv.summary : 'Fast-forward prod to dev. Only you can do this.';
+}
+async function refreshRelease(id) {
+  releaseInfo.set(id, { ...(releaseInfo.get(id) || {}), at: Date.now() });
+  const res = await api.releasePreview(id);
+  releaseInfo.set(id, res.ok ? { at: Date.now(), preview: res.result } : { at: Date.now(), error: res.error });
+  const p = projectById(id);
+  if (p && view === 'board' && curProject === id) paintRelease(p);
+}
 $('releaseBtn').addEventListener('click', async () => {
   const p = projectById(curProject); if (!p) return;
   const btn = $('releaseBtn'); btn.disabled = true;
   const r = await api.releaseToProd(p.id); btn.disabled = false;
   if (!r.ok) toast(r.error);
-  else toast(r.result.released ? `Released ${r.result.commits} commit${r.result.commits === 1 ? '' : 's'} to prod (${r.result.sha}).` : r.result.note);
+  else toast(r.result.released ? `Released ${r.result.commits} commit${r.result.commits === 1 ? '' : 's'} to prod: ${r.result.from} → ${r.result.sha}${r.result.prs && r.result.prs.length ? ` (${r.result.prs.map(n => `#${n}`).join(', ')})` : ''}.` : r.result.note);
+  releaseInfo.delete(p.id); paintRelease(projectById(p.id));
 });""")
 # project drawer: repository
 js = rep(js, "  $('pdDelete').hidden = !p;\n", r"""  $('pdDelete').hidden = !p;
@@ -375,6 +400,57 @@ js = rep(js, "  if (a.dataset.act === 'close') { $('projDrawer').hidden = true; 
     return;
   }
   if (a.dataset.act === 'delete' && editingProject) {""")
+
+# 12. Auto-merge of worker PRs into dev (per project, default on)
+markup = rep(markup, '<p class="hint repo-note" id="pdRepoNote"></p>',
+             '<p class="hint repo-note" id="pdRepoNote"></p>\n    <div class="assign-row" style="gap:8px;margin-top:6px"><input type="checkbox" id="pdAuto" checked style="width:auto;margin:0"><label for="pdAuto" style="margin:0;text-transform:none;letter-spacing:0;font-weight:600">Auto-merge worker PRs into dev when checks pass</label></div>\n    <label for="pdCheck">Check command <span class="hint">empty = npm run check, or npm test, from package.json</span></label><input id="pdCheck" maxlength="300" placeholder="npm run check" spellcheck="false">')
+js = rep(js, "  if (editingProject) { Object.assign(editingProject, { name, key, desc, ctx, color: projColor }); saveProject(editingProject); }\n  else { const p = makeProject({ name, key, desc, ctx, color: projColor }); curProject = p.id;",
+         "  const merging = { autoMerge: $('pdAuto').checked, checkCmd: $('pdCheck').value.trim().slice(0, 300) };\n  if (editingProject) { Object.assign(editingProject, { name, key, desc, ctx, color: projColor }, merging); saveProject(editingProject); }\n  else { const p = makeProject({ name, key, desc, ctx, color: projColor }); Object.assign(p, merging); saveProject(p); curProject = p.id;")
+js = rep(js, "  $('pdRepo').value = p && p.repo ? p.repo.source : '';\n",
+         "  $('pdRepo').value = p && p.repo ? p.repo.source : '';\n  $('pdAuto').checked = !p || p.autoMerge !== false; $('pdCheck').value = (p && p.checkCmd) || '';\n")
+js = rep(js, "    ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\\\worktrees\\\\${p.key} on feature/${p.key}-* branches cut from dev · PRs go into dev; only you release dev → prod.`",
+         "    ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\\\worktrees\\\\${p.key} on feature/${p.key}-* branches cut from dev · ${p.autoMerge !== false ? `Auto-merge on: worker PRs merge into dev when ${p.checkCmd ? p.checkCmd : 'the project check (npm run check / npm test)'} passes` : 'Auto-merge off: worker PRs wait for you'} · only you release dev → prod.`")
+# job detail: merge result and check output
+js = rep(js, "  const sig = j.id + j.status + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '')",
+         "  const sig = j.id + j.status + (j.merge ? j.merge.status : '') + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '')")
+js = rep(js, "    if (prHTML(j)) h += `<p style=\"margin:6px 0\">${prHTML(j)}</p>`;",
+         "    if (prHTML(j)) h += `<p style=\"margin:6px 0\">${prHTML(j)}</p>`;\n    if (j.merge) h += `<p style=\"margin:6px 0\">${mergeHTML(j)}</p>${j.merge.check && j.merge.check.output && !j.merge.check.ok ? `<pre class=\"files\" style=\"white-space:pre-wrap\">${esc(j.merge.check.output.slice(-1500))}</pre>` : ''}`;")
+js = rep(js, "let paintedCode = '';", r"""function mergeHTML(j) {
+  const m = j.merge; if (!m) return '';
+  const c = m.check ? ` <code>${esc(m.check.cmd)}</code> ${m.check.ok ? `passed in ${fmtDur(m.check.ms)}` : 'failed'}` : '';
+  if (m.status === 'merged') return `<span style="color:var(--ok)">Auto-merged into dev ·${c || ' merged'}</span>`;
+  if (m.status === 'blocked') return `<span style="color:var(--warn)">Left open for you: ${esc(m.reason)}</span>`;
+  return `<span>Auto-merge: checking…</span>`;
+}
+let paintedCode = '';""")
+# task drawer rows
+js = rep(js, "${j.kind === 'code' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}</div>` : ''}",
+         "${j.kind === 'code' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}${j.merge ? `<span>${mergeHTML(j)}</span>` : ''}</div>` : ''}")
+js = rep(js, "  const sig = js.map(j => j.id + j.status + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '')",
+         "  const sig = js.map(j => j.id + j.status + (j.merge ? j.merge.status : '') + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '')")
+# Control room alerts: PRs auto-merge left open (until merged, or 24 h)
+js = rep(js, "  if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);",
+         "  if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);\n  for (const j of jobs.filter(j => j.merge && j.merge.status === 'blocked' && j.pr && !j.pr.merged && j.finishedAt > Date.now() - 24 * 3600e3)) { const t = j.taskId && taskById(j.taskId); out.push(['warn', `PR #${j.pr.number}${t ? ` (${taskKey(t)})` : ''} was not auto-merged: ${j.merge.reason}. It is open for you on GitHub.`]); }")
+
+# 13. QA stage (BWI-12): Testing column, QA capability, QA notes, QA jobs in the job detail
+markup = rep(markup, '<option value="pm">Project manager: proposes tickets</option></select>',
+             '<option value="pm">Project manager: proposes tickets</option><option value="qa">QA: tests each coder\'s PR before it merges</option></select>')
+js = rep(js, "const CAP_LABEL = { text: 'text', code: 'code', pm: 'PM' };", "const CAP_LABEL = { text: 'text', code: 'code', pm: 'PM', qa: 'QA' };")
+js = rep(js, "const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['review', 'Review'], ['done', 'Done']];",
+         "const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];")
+js = rep(js, "(j.prError || '') + (j.steps || []).length).join('|');\n  if (!force && sig === runsSig) return; runsSig = sig;",
+         "(j.prError || '') + (j.steps || []).length).join('|') + '#' + (t.qa || []).length;\n  if (!force && sig === runsSig) return; runsSig = sig;\n  const qaHTML = (t.qa || []).length ? `<span class=\"label\">QA notes</span>` + [...t.qa].reverse().map(q => `<div class=\"output\"><b>${q.verdict === 'pass' ? 'Passed' : q.verdict === 'fail' ? 'Failed' : 'Not finished'}</b> · ${esc(q.by || 'QA')} · job #${q.n}${q.verdict === 'fail' && q.coder ? ` · back to ${esc(q.coder)}` : ''}<br>${md(q.notes || '')}</div>`).join('') : '';")
+js = rep(js, "  $('tdRuns').innerHTML = js.length ? `<span class=\"label\">Factory runs</span>",
+         "  $('tdRuns').innerHTML = js.length ? qaHTML + `<span class=\"label\">Factory runs</span>")
+js = rep(js, "${j.kind === 'code' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">",
+         "${j.kind === 'code' || j.kind === 'qa' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">")
+js = rep(js, "api.onNotice(n => { if (n.kind === 'task-review') toast(n.text); });",
+         "api.onNotice(n => { if (['task-review', 'task-testing', 'task-qa-fail'].includes(n.kind)) toast(n.text); });")
+# job detail: QA jobs show branch, PR, verdict, merge result and steps like coding jobs
+js = rep(js, "  if (!j || (j.kind !== 'code' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }",
+         "  if (!j || (j.kind !== 'code' && j.kind !== 'qa' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }")
+js = rep(js, "  if (j.kind === 'code') {\n    h += `<span class=\"label\">Code</span>",
+         "  if (j.kind === 'code' || j.kind === 'qa') {\n    h += `<span class=\"label\">${j.kind === 'qa' ? `QA${j.qa && j.qa.verdict ? ` · ${j.qa.verdict === 'pass' ? 'passed' : 'failed'}` : ''}` : 'Code'}</span>")
 
 page = f"""<!doctype html>
 <html lang="en">
