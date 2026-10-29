@@ -22,7 +22,13 @@ const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style 
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_CONCURRENCY = 12;
-const validConc = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_CONCURRENCY;
+const validConc = (n, workerCount = MAX_CONCURRENCY) => Number.isInteger(n) && n >= 1 && n <= Math.min(MAX_CONCURRENCY, Math.max(1, workerCount));
+// Clear message for a rejected jobs-at-once value, or null when it is fine.
+const concError = (n, workerCount) => {
+  const max = Math.min(MAX_CONCURRENCY, Math.max(1, workerCount));
+  if (validConc(n, workerCount)) return null;
+  return `Jobs at once must be a whole number from 1 to ${max} (you have ${workerCount} hired ${workerCount === 1 ? 'worker' : 'workers'}, max ${MAX_CONCURRENCY}).`;
+};
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
   'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'retryOf', 'retries', 'needsReview', 'formatRetried'];
@@ -198,7 +204,8 @@ class Engine extends EventEmitter {
   applyData(d, initial) {
     const f = d.factory || {};
     this.workers = Array.isArray(f.workers) && f.workers.length ? f.workers.filter((w) => w && w.id && w.name).map(normWorker) : DEFAULT_WORKERS.map(normWorker);
-    this.concurrency = validConc(f.concurrency) ? f.concurrency : 2;
+    // Saved value persists; if the crew shrank below it, clamp to the worker count.
+    this.concurrency = Number.isInteger(f.concurrency) && f.concurrency >= 1 ? Math.min(f.concurrency, this.workers.length, MAX_CONCURRENCY) : Math.min(2, this.workers.length);
     this.foreman = normForeman(f.foreman);
     this.autoAcceptPm = f.autoAcceptPm !== false;
     this.autoSummary = f.autoSummary !== false;
@@ -951,8 +958,10 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
 
   // ---------- factory ----------
   // Lowering never stops running jobs; the scheduler just won't start new ones until the count drops.
+  // Throws an Error with a clear message when c is below 1, above the worker count (max 12) or not whole.
   setConcurrency(c) {
-    if (!validConc(c)) return;
+    const err = concError(c, this.workers.length);
+    if (err) throw new Error(err);
     this.concurrency = c;
     this.changed('factory');
     this.schedule();
@@ -960,7 +969,14 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   // Whole-factory save from the main window (worker edits, hires, jobs at once, foreman).
   setFactory(f) {
     if (Array.isArray(f.workers) && f.workers.length) this.workers = f.workers.filter((w) => w && w.id && w.name).slice(0, MAX_WORKERS).map(normWorker);
-    if (validConc(f.concurrency)) this.concurrency = f.concurrency;
+    if (f.concurrency !== undefined) {
+      const err = concError(f.concurrency, this.workers.length);
+      if (err) {
+        // Crew changes still apply; the bad value is reported and the old one kept (clamped to the crew).
+        this.concurrency = Math.min(this.concurrency, this.workers.length);
+        this.emit('notice', { kind: 'error', text: err });
+      } else this.concurrency = f.concurrency;
+    }
     if (f.foreman) this.foreman = normForeman(f.foreman);
     if (typeof f.autoAcceptPm === 'boolean') this.autoAcceptPm = f.autoAcceptPm;
     if (typeof f.autoSummary === 'boolean') this.autoSummary = f.autoSummary;
@@ -992,6 +1008,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (this.workers.length <= 1) return { ok: false, error: 'The factory needs at least one worker.' };
     for (const j of this.jobs) if (j.status === 'queued' && j.pref === w.id) { j.pref = 'any'; this.jobChanged(j); }
     this.workers = this.workers.filter((x) => x !== w);
+    this.concurrency = Math.min(this.concurrency, this.workers.length);
     this.changed('factory');
     this.schedule();
     return { ok: true };
@@ -1233,7 +1250,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       },
       set_jobs_at_once(i, msg) {
         const n = Number(i.n);
-        if (!validConc(n)) throw new Error(`n must be a whole number from 1 to ${MAX_CONCURRENCY}.`);
+        const cerr = concError(n, E.workers.length);
+        if (cerr) throw new Error(cerr);
         E.setConcurrency(n);
         msg.actions.push(`Jobs at once: ${n}`);
         return { jobs_at_once: n };

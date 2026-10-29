@@ -750,15 +750,24 @@ $('examples').addEventListener('click', e => { const b = e.target.closest('[data
 document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('button[data-tab]'); if (b) setTab(b.dataset.tab); });
 $('concSeg').addEventListener('click', e => {
   const b = e.target.closest('[data-c]'); if (!b) return;
-  concurrency = +b.dataset.c; syncConc(); store.saveFactory(); renderDash();
+  setConc(+b.dataset.c);
 });
-$('concNum').addEventListener('change', e => {
-  const n = Math.round(+e.target.value);
-  if (n >= 1 && n <= 12) { concurrency = n; store.saveFactory(); renderDash(); }
+$('concNum').addEventListener('change', e => setConc(+e.target.value));
+const maxConc = () => Math.min(12, Math.max(1, workers.length));
+function setConc(n) {
+  if (!Number.isInteger(n) || n < 1 || n > maxConc()) {
+    toast(`Jobs at once must be a whole number from 1 to ${maxConc()} (you have ${workers.length} hired ${workers.length === 1 ? 'worker' : 'workers'}, max 12).`);
+  } else { concurrency = n; store.saveFactory(); renderDash(); }
   syncConc();
-});
+}
 function syncConc() {
-  for (const x of document.querySelectorAll('#concSeg button')) x.setAttribute('aria-pressed', String(+x.dataset.c === concurrency));
+  if (concurrency > maxConc()) concurrency = maxConc();
+  for (const x of document.querySelectorAll('#concSeg button')) {
+    x.setAttribute('aria-pressed', String(+x.dataset.c === concurrency));
+    x.disabled = +x.dataset.c > maxConc();
+  }
+  $('concNum').max = maxConc();
+  $('concNum').setAttribute('aria-label', `Jobs at once (1 to ${maxConc()})`);
   $('concNum').value = concurrency;
   $('concNote').hidden = concurrency < 6;
 }
@@ -818,7 +827,7 @@ $('retireBtn').addEventListener('click', () => {
   if (!retireArmed) { retireArmed = true; $('retireBtn').textContent = `Confirm: retire ${w.name}`; clearTimeout(retireT); retireT = setTimeout(() => { retireArmed = false; $('retireBtn').textContent = 'Retire'; }, 4000); return; }
   api.retireWorker(w.id).then(r => { if (!r.ok) toast(r.error); });
   workers = workers.filter(x => x !== w); vis.delete(w.id); selWorker = null;
-  layout(); syncWorkerSelect(); toast(`${w.name} retired. Their queued jobs go to any free worker.`);
+  layout(); syncWorkerSelect(); syncConc(); toast(`${w.name} retired. Their queued jobs go to any free worker.`);
   holdRender = false; renderWorkers();
 });
 $('hireBtn').addEventListener('click', () => {
@@ -827,7 +836,7 @@ $('hireBtn').addEventListener('click', () => {
   const w = { id: uid('w_'), name: pick(NAMES.filter(n => !used.has(n))) || 'Newbie', species: pick(Object.keys(SPECIES)), specialty: 'Generalist. Handles any job carefully and concisely.' };
   workers.push(w); layout();
   const st = stationOf(w), v = V(w); v.x = CORR_L; v.y = st.aisle; v.emote = { kind: 'heart', t: 2, max: 2 };
-  store.saveFactory(); syncWorkerSelect(); openWorker(w.id); paintWorkerDetail(true);
+  store.saveFactory(); syncWorkerSelect(); syncConc(); openWorker(w.id); paintWorkerDetail(true);
   toast(`${w.name} joined the crew. Give them a specialty below.`);
   setTimeout(() => $('wdSpec').focus(), 50);
 });
