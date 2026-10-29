@@ -29,6 +29,9 @@ const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
 const QA_SPECIALTY = 'QA tester. Reads the diff, runs the existing tests, adds tests where they are missing, checks every acceptance criterion, and reports plainly what passed and what failed.';
 const MAX_QA_NOTES = 8;
+const MAX_AUDIT = 1000; // per-task audit entries kept (a safety cap only; nothing edits or removes entries)
+const AUDIT_TYPES = ['created', 'status', 'assignee', 'qa', 'retry'];
+const normAudit = (a) => ({ at: Number(a.at) || 0, type: AUDIT_TYPES.includes(a.type) ? a.type : 'status', actor: String(a.actor || 'unknown').slice(0, 60), text: String(a.text || '').slice(0, 500) });
 
 // Coding jobs: the only tools a worker agent gets, and the shell commands it may run.
 // Everything else is denied without asking (--permission-mode dontAsk).
@@ -161,7 +164,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -448,6 +451,7 @@ class Engine extends EventEmitter {
     if (j.needsReview && t) {
       // Malformed output never lands silently: park the card in Review, labelled.
       const labels = new Set(t.labels || []); labels.add('needs review');
+      this.logAudit(t, 'status', 'System', `Status: ${this.colLabel(t.status)} -> ${this.colLabel('review')} (worker output not in required format)`);
       Object.assign(t, { status: 'review', labels: [...labels], order: Date.now(), updatedAt: Date.now() });
       this.changed('tasks');
       this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} needs review: the worker's output was not in the required format.` });
@@ -455,6 +459,7 @@ class Engine extends EventEmitter {
     else if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
       // Every coder's PR goes through QA before Review; other jobs go straight to Review.
       if (j.kind === 'code' && j.branch && this.startQa(j, t)) { /* task is now in Testing */ } else {
+        this.logAudit(t, 'status', (this.byWorker(j.workerId) || {}).name || 'System', `Status: ${this.colLabel(t.status)} -> ${this.colLabel('review')} (job #${j.n} finished)`);
         Object.assign(t, { status: 'review', order: Date.now(), updatedAt: Date.now() });
         this.changed('tasks');
         this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
@@ -486,6 +491,7 @@ class Engine extends EventEmitter {
     if (!w) return false;
     const ref = this.taskKey(t);
     const text = `Verify ${ref}: ${t.title}\n\nAcceptance criteria and description:\n${t.desc || '(none given)'}\n\nThe coder's work is on branch ${coderJob.branch}${coderJob.pr ? ` (PR #${coderJob.pr.number})` : ''}. Coder's summary:\n${String(coderJob.output || '').slice(0, 3000)}`;
+    this.logAudit(t, 'status', 'System', `Status: ${this.colLabel(t.status)} -> ${this.colLabel('testing')} (QA queued for job #${coderJob.n})`);
     Object.assign(t, { status: 'testing', order: Date.now(), updatedAt: Date.now() });
     const ctx = [...new Set([...(this.projectById(t.projectId).ctx || []), ...(t.ctx || [])])].filter((id) => this.ctxById(id));
     // Not pinned to a worker: whichever QA worker is free picks it up.
@@ -583,9 +589,14 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       ? `QA could not finish (${j.status === 'cancelled' ? 'stopped' : j.error || 'no result'}). Passing to Review so a person can look.${j.output ? `\n\n${j.qa ? j.qa.notes : String(j.output).slice(0, 3000)}` : ''}`
       : j.qa.notes;
     t.qa = [...(t.qa || []), { job: j.id, n: j.n, verdict, notes, by: w ? w.name : 'QA', coder: coder ? coder.name : '', at: Date.now() }].slice(-MAX_QA_NOTES);
+    const qaBy = w ? w.name : 'QA';
+    this.logAudit(t, 'qa', qaBy, `QA ${verdict === 'pass' ? 'passed' : verdict === 'fail' ? 'failed' : 'did not finish'} (job #${j.n})`);
     if (t.status === 'testing') { // a person may have moved the task meanwhile; leave it where they put it
+      const from = t.status, fromAssignee = t.assignee;
       if (verdict === 'fail') Object.assign(t, { status: 'progress', assignee: coder ? coder.id : t.assignee });
       else t.status = 'review';
+      this.logAudit(t, 'status', qaBy, `Status: ${this.colLabel(from)} -> ${this.colLabel(t.status)}`);
+      if (t.assignee !== fromAssignee) this.logAudit(t, 'assignee', qaBy, `Assignee: ${this.workerLabel(fromAssignee)} -> ${this.workerLabel(t.assignee)}`);
       t.order = Date.now();
     }
     t.updatedAt = Date.now();
@@ -746,7 +757,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       // Merged into dev with checks passing: the task is done. The owner's gate is
       // Release to prod, which lists exactly the PRs it will ship.
       const cur = t && this.taskById(t.id); // t may be stale if a window saved the task meanwhile
-      if (cur) { Object.assign(cur, { status: 'done', order: Date.now() }); this.upsert('tasks', cur); }
+      if (cur) { if (cur.status !== 'done') this.logAudit(cur, 'status', 'System', `Status: ${this.colLabel(cur.status)} -> ${this.colLabel('done')} (PR #${j.pr.number} auto-merged)`); Object.assign(cur, { status: 'done', order: Date.now() }); this.upsert('tasks', cur); }
       this.emit('notice', { kind: 'job', job: j.id, text: `${ref}: checks passed and PR #${j.pr.number} is merged into dev.` });
     } catch (e) {
       this.blockMerge(j, ref, `merge failed: ${redact(e.message)}`, step, { check });
@@ -834,7 +845,10 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (!j) return null;
     // A retry is a brand-new job (so it gets its own history entry) with the same
     // inputs; it links back to the job it retries and carries the running retry count.
-    return this.createJob(j.text, j.workerId && this.byWorker(j.workerId) ? j.workerId : 'any', j.tier, { ctx: j.ctx, projectId: j.projectId, taskId: j.taskId, retryOf: j.id, retries: (j.retries || 0) + 1 });
+    const nj = this.createJob(j.text, j.workerId && this.byWorker(j.workerId) ? j.workerId : 'any', j.tier, { ctx: j.ctx, projectId: j.projectId, taskId: j.taskId, retryOf: j.id, retries: (j.retries || 0) + 1 });
+    const t = j.taskId && this.taskById(j.taskId);
+    if (t) { this.logAudit(t, 'retry', j.byForeman ? 'Foreman' : 'You', `Retried job #${j.n} as job #${nj.n} (retry ${nj.retries})`); this.changed('tasks'); }
+    return nj;
   }
 
   deleteJobs(ids) {
@@ -897,6 +911,24 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     return this.foreman;
   }
 
+  // ---------- audit trail ----------
+  colLabel(s) { const c = COLS.find((x) => x[0] === s); return c ? c[1] : String(s || 'none'); }
+  workerLabel(id) { const w = id && this.byWorker(id); return w ? w.name : 'any'; }
+  auditEntry(type, actor, text) { return normAudit({ at: Date.now(), type, actor, text }); }
+  // Appends one entry to a task's trail. Callers persist/emit (upsert or changed('tasks')).
+  logAudit(t, type, actor, text) {
+    t.audit = [...(t.audit || []), this.auditEntry(type, actor, text)];
+  }
+  auditEntries(t) { return [...(t.audit || [])].reverse().sort((a, b) => b.at - a.at); } // newest first; ties keep latest-appended first
+  auditText(taskId) {
+    const t = this.taskById(taskId);
+    if (!t) return null;
+    const pad = (n) => String(n).padStart(2, '0');
+    const fmt = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; };
+    const lines = this.auditEntries(t).map((a) => `${fmt(a.at)}  [${a.type}]  ${a.actor}: ${a.text}`);
+    return `Audit trail for ${this.taskKey(t)} - ${t.title}\n(newest first)\n\n${lines.join('\n') || '(no events)'}\n`;
+  }
+
   // ---------- projects, tasks, context ----------
   upsert(coll, obj) {
     const norm = { projects: normProject, tasks: normTask, contexts: normCtx }[coll];
@@ -904,6 +936,17 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     const o = norm({ ...obj, updatedAt: Date.now() });
     const list = this[coll];
     const i = list.findIndex((x) => x.id === o.id);
+    if (coll === 'tasks' && i >= 0) {
+      // The audit trail is append-only and owned by the engine: whatever audit a caller sends is ignored.
+      const prev = list[i];
+      o.audit = prev.audit.slice();
+      // A plain save from the UI arrives as a separate object, so status/assignee edits show up as a diff.
+      // Engine code that mutates the stored task in place records its own entries instead.
+      if (prev !== obj) {
+        if (o.status !== prev.status) o.audit.push(this.auditEntry('status', 'You', `Status: ${this.colLabel(prev.status)} -> ${this.colLabel(o.status)}`));
+        if (o.assignee !== prev.assignee) o.audit.push(this.auditEntry('assignee', 'You', `Assignee: ${this.workerLabel(prev.assignee)} -> ${this.workerLabel(o.assignee)}`));
+      }
+    }
     // Repo settings change only through setProjectRepo, never through a plain save.
     if (coll === 'projects') { o.repo = i >= 0 ? list[i].repo : null; o.lastRelease = i >= 0 ? list[i].lastRelease : null; }
     if (i >= 0) list[i] = o;
@@ -922,7 +965,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   makeTask(p, o) {
     p.seq = Math.max(p.seq || 0, ...this.tasks.filter((t) => t.projectId === p.id).map((t) => t.n || 0)) + 1;
     this.upsert('projects', p);
-    return this.upsert('tasks', { id: uid('t_'), projectId: p.id, n: p.seq, title: o.title, desc: o.desc || '', status: o.status || 'todo', priority: o.priority || 'med', assignee: o.assignee || '', labels: o.labels || [], due: o.due || '', ctx: o.ctx || [], jobs: [], order: Date.now() + Math.random(), createdAt: Date.now() });
+    return this.upsert('tasks', { id: uid('t_'), projectId: p.id, n: p.seq, title: o.title, desc: o.desc || '', status: o.status || 'todo', priority: o.priority || 'med', assignee: o.assignee || '', labels: o.labels || [], due: o.due || '', ctx: o.ctx || [], jobs: [], audit: [this.auditEntry('created', o.actor || 'You', `Created in ${this.colLabel(o.status || 'todo')}`)], order: Date.now() + Math.random(), createdAt: Date.now() });
   }
   sendTask(taskId, extra = {}) {
     const t = this.taskById(taskId);
@@ -932,6 +975,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     const lastQa = (t.qa || [])[(t.qa || []).length - 1];
     const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}${lastQa && lastQa.verdict === 'fail' ? `\n\nQA failed the previous attempt. Fix these problems:\n${lastQa.notes}` : ''}`;
     const j = this.createJob(text, t.assignee && this.byWorker(t.assignee) ? t.assignee : 'any', 'default', { ctx, taskId: t.id, projectId: t.projectId, ...extra });
+    const actor = extra.byForeman ? 'Foreman' : 'You';
+    if (t.status !== 'progress') this.logAudit(t, 'status', actor, `Status: ${this.colLabel(t.status)} -> ${this.colLabel('progress')} (sent to factory, job #${j.n})`);
     Object.assign(t, { jobs: [...(t.jobs || []), j.id], status: 'progress', order: Date.now() });
     this.upsert('tasks', t);
     return j;
@@ -1049,9 +1094,9 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         if (i.title) t.title = String(i.title).slice(0, 140);
         if (i.description != null) t.desc = String(i.description).slice(0, 6000);
         if (i.status === 'done' && t.status !== 'done' && /^\s*(#+\s*)?acceptance/im.test(t.desc || '') && !(t.acceptance && (t.acceptance.override || (t.acceptance.items || []).length && t.acceptance.items.every((x) => x.result === 'pass')))) throw new Error(`${E.taskKey(t)} has acceptance criteria that are not all marked pass. The owner must complete the QA checklist or override it before it can be Done.`);
-        if (COLS.some((c) => c[0] === i.status) && i.status !== t.status) { t.status = i.status; t.order = Date.now(); }
+        if (COLS.some((c) => c[0] === i.status) && i.status !== t.status) { E.logAudit(t, 'status', 'Foreman', `Status: ${E.colLabel(t.status)} -> ${E.colLabel(i.status)}`); t.status = i.status; t.order = Date.now(); }
         if (PRIO[i.priority]) t.priority = i.priority;
-        if (i.assignee != null) { const w = E.findWorker(i.assignee); t.assignee = w ? w.id : ''; }
+        if (i.assignee != null) { const w = E.findWorker(i.assignee); const next = w ? w.id : ''; if (next !== t.assignee) E.logAudit(t, 'assignee', 'Foreman', `Assignee: ${E.workerLabel(t.assignee)} -> ${E.workerLabel(next)}`); t.assignee = next; }
         E.upsert('tasks', t);
         msg.actions.push(`${E.taskKey(t)} updated`);
         return { key: E.taskKey(t), status: t.status, priority: t.priority, assignee: (E.byWorker(t.assignee) || {}).name || 'any' };

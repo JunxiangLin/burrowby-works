@@ -1088,11 +1088,15 @@ function paintCtxNote() {
 let runsSig = '';
 function paintTaskRuns(force) {
   const t = editingTask; if (!t) return;
-  if (taskIsNew) { $('tdRuns').innerHTML = ''; runsSig = ''; return; }
+  if (taskIsNew) { $('tdRuns').innerHTML = ''; $('tdAudit').innerHTML = ''; runsSig = ''; return; }
   const js = (t.jobs || []).map(jobById).filter(Boolean).reverse();
-  const sig = js.map(j => j.id + j.status + (j.merge ? j.merge.status : '') + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + (j.steps || []).length).join('|') + '#' + (t.qa || []).length;
+  const sig = (t.audit || []).length + '@' + js.map(j => j.id + j.status + (j.merge ? j.merge.status : '') + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + (j.steps || []).length).join('|') + '#' + (t.qa || []).length;
   if (!force && sig === runsSig) return; runsSig = sig;
   const qaHTML = (t.qa || []).length ? `<span class="label">QA notes</span>` + [...t.qa].reverse().map(q => `<div class="output"><b>${q.verdict === 'pass' ? 'Passed' : q.verdict === 'fail' ? 'Failed' : 'Not finished'}</b> · ${esc(q.by || 'QA')} · job #${q.n}${q.verdict === 'fail' && q.coder ? ` · back to ${esc(q.coder)}` : ''}<br>${md(q.notes || '')}</div>`).join('') : '';
+  const events = [...(t.audit || [])].reverse().sort((a, b) => b.at - a.at); // newest first
+  $('tdAudit').innerHTML = `<span class="label">Audit trail</span>` + (events.length
+    ? `<div class="output">${events.map(a => `<div><b>${esc(a.type)}</b> · ${esc(a.actor)} · ${esc(new Date(a.at).toLocaleString())}<br>${esc(a.text)}</div>`).join('')}</div><div class="actions"><button class="btn" type="button" data-act="export-audit">Export as text</button></div>`
+    : '<div class="empty">No events recorded yet.</div>');
   const latest = js.find(j => j.output);
   $('tdRuns').innerHTML = js.length ? qaHTML + `<span class="label">Factory runs</span><div class="joblist">${js.map(j => { const [sl, sc] = STATUS[j.status]; const w = byWorker(j.workerId || j.pref); return `<div class="job" data-job="${j.id}" role="button" tabindex="0"><img src="${avatar(w ? w.species : 'chick')}" alt=""><span class="txt">Job #${j.n} · ${w ? esc(w.name) : 'any worker'}</span><span class="pill" style="--c:${sc}">${sl}</span><span class="meta"><span>${j.startedAt ? fmtDur(runMs(j)) : 'waiting'}</span><span>≈${fmtNum(j.outTok || 0)} tok</span>${j.kind === 'code' && j.steps ? `<span>${j.steps.length} steps</span>` : ''}${j.diff ? `<span>+${j.diff.insertions} −${j.diff.deletions}</span>` : ''}<span>${ago(j.createdAt)}</span></span></div>${j.kind === 'code' || j.kind === 'qa' ? `<div class="legend" style="margin:2px 0 6px 40px">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}${j.merge ? `<span>${mergeHTML(j)}</span>` : ''}</div>` : ''}`; }).join('')}</div>` +
     (latest ? `<span class="label">Latest output · job #${latest.n}</span><div class="output">${md(latest.output)}</div>` : '') : '<div class="empty">Not sent to the factory yet.</div>';
@@ -1117,6 +1121,7 @@ $('taskDrawer').addEventListener('click', e => {
   if (run) { $('taskDrawer').hidden = true; setView('factory'); openJob(run.dataset.job); return; }
   const a = e.target.closest('[data-act]'); if (!a) return;
   if (a.dataset.act === 'close') { $('taskDrawer').hidden = true; editingTask = null; return; }
+  if (a.dataset.act === 'export-audit') { api.exportAudit(editingTask.id).then(r => { if (r && r.ok) toast('Audit trail exported.'); }); return; }
   if (a.dataset.act === 'send') { const t = saveTaskForm(); if (t) sendTask(t).then(() => { openTask(t, false); renderCols(); }); return; }
   if (a.dataset.act === 'delete') confirmClick(a, 'Confirm delete', () => {
     const t = editingTask; tasks = tasks.filter(x => x !== t); store.delDoc('tasks', t.id);
