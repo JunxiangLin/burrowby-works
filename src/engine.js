@@ -326,12 +326,15 @@ class Engine extends EventEmitter {
       if (j.status !== 'queued') continue;
       let w = j.pref !== 'any' ? this.byWorker(j.pref) : null;
       if (j.pref !== 'any' && !w) j.pref = 'any';
+      // Older QA jobs pinned to a busy QA worker are released so any free QA worker can take them.
+      if (j.qaFor && w && this.workerBusy(w) && this.workers.some((x) => x.capability === 'qa' && !this.workerBusy(x))) { j.pref = 'any'; w = null; this.jobChanged(j); }
       if (j.pref === 'any') {
-        const free = this.workers.filter((x) => !this.workerBusy(x));
+        // QA verification jobs only go to QA workers; the least-busy idle one wins.
+        const free = this.workers.filter((x) => !this.workerBusy(x) && (!j.qaFor || x.capability === 'qa'));
         if (!free.length) continue;
         free.sort((a, b) => this.busyMs(a, 3600e3) - this.busyMs(b, 3600e3));
         // Tasks from a project with a repo go to a coder when one is free.
-        w = (this.repoReady(this.projectById(j.projectId)) && j.taskId && free.find((x) => x.capability === 'code')) || free[0];
+        w = (!j.qaFor && this.repoReady(this.projectById(j.projectId)) && j.taskId && free.find((x) => x.capability === 'code')) || free[0];
       }
       if (this.workerBusy(w)) continue;
       running++;
@@ -440,10 +443,11 @@ class Engine extends EventEmitter {
     const text = `Verify ${ref}: ${t.title}\n\nAcceptance criteria and description:\n${t.desc || '(none given)'}\n\nThe coder's work is on branch ${coderJob.branch}${coderJob.pr ? ` (PR #${coderJob.pr.number})` : ''}. Coder's summary:\n${String(coderJob.output || '').slice(0, 3000)}`;
     Object.assign(t, { status: 'testing', order: Date.now(), updatedAt: Date.now() });
     const ctx = [...new Set([...(this.projectById(t.projectId).ctx || []), ...(t.ctx || [])])].filter((id) => this.ctxById(id));
-    const q = this.createJob(text, w.id, 'default', { ctx, taskId: t.id, projectId: t.projectId, qaFor: coderJob.id });
+    // Not pinned to a worker: whichever QA worker is free picks it up.
+    const q = this.createJob(text, 'any', 'default', { ctx, taskId: t.id, projectId: t.projectId, qaFor: coderJob.id });
     t.jobs = [...(t.jobs || []), q.id];
     this.changed('tasks');
-    this.emit('notice', { kind: 'task-testing', text: `${ref} is in Testing with ${w.name}.` });
+    this.emit('notice', { kind: 'task-testing', text: `${ref} is in Testing; the next free QA worker will pick it up.` });
     return true;
   }
 
