@@ -239,6 +239,8 @@
     <label for="pdRepo">Repository <span class="hint">GitHub URL or local folder; the app keeps its own clone</span></label>
     <div class="assign-row"><input id="pdRepo" class="grow" placeholder="https://github.com/you/repo or C:\path\to\repo" spellcheck="false"><button class="btn small" type="button" data-act="set-repo" id="pdRepoBtn">Connect</button></div>
     <p class="hint repo-note" id="pdRepoNote"></p>
+    <div class="assign-row" style="gap:8px;margin-top:6px"><input type="checkbox" id="pdAuto" checked style="width:auto;margin:0"><label for="pdAuto" style="margin:0;text-transform:none;letter-spacing:0;font-weight:600">Auto-merge worker PRs into dev when checks pass</label></div>
+    <label for="pdCheck">Check command <span class="hint">empty = npm run check, or npm test, from package.json</span></label><input id="pdCheck" maxlength="300" placeholder="npm run check" spellcheck="false">
     <div class="actions"><button class="btn primary" type="submit">Save project</button><button class="btn danger" type="button" data-act="delete" id="pdDelete">Delete project</button></div>
   </form>
 </div>

@@ -401,6 +401,37 @@ js = rep(js, "  if (a.dataset.act === 'close') { $('projDrawer').hidden = true; 
   }
   if (a.dataset.act === 'delete' && editingProject) {""")
 
+# 12. Auto-merge of worker PRs into dev (per project, default on)
+markup = rep(markup, '<p class="hint repo-note" id="pdRepoNote"></p>',
+             '<p class="hint repo-note" id="pdRepoNote"></p>\n    <div class="assign-row" style="gap:8px;margin-top:6px"><input type="checkbox" id="pdAuto" checked style="width:auto;margin:0"><label for="pdAuto" style="margin:0;text-transform:none;letter-spacing:0;font-weight:600">Auto-merge worker PRs into dev when checks pass</label></div>\n    <label for="pdCheck">Check command <span class="hint">empty = npm run check, or npm test, from package.json</span></label><input id="pdCheck" maxlength="300" placeholder="npm run check" spellcheck="false">')
+js = rep(js, "  if (editingProject) { Object.assign(editingProject, { name, key, desc, ctx, color: projColor }); saveProject(editingProject); }\n  else { const p = makeProject({ name, key, desc, ctx, color: projColor }); curProject = p.id;",
+         "  const merging = { autoMerge: $('pdAuto').checked, checkCmd: $('pdCheck').value.trim().slice(0, 300) };\n  if (editingProject) { Object.assign(editingProject, { name, key, desc, ctx, color: projColor }, merging); saveProject(editingProject); }\n  else { const p = makeProject({ name, key, desc, ctx, color: projColor }); Object.assign(p, merging); saveProject(p); curProject = p.id;")
+js = rep(js, "  $('pdRepo').value = p && p.repo ? p.repo.source : '';\n",
+         "  $('pdRepo').value = p && p.repo ? p.repo.source : '';\n  $('pdAuto').checked = !p || p.autoMerge !== false; $('pdCheck').value = (p && p.checkCmd) || '';\n")
+js = rep(js, "    ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\\\worktrees\\\\${p.key} on feature/${p.key}-* branches cut from dev · PRs go into dev; only you release dev → prod.`",
+         "    ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\\\worktrees\\\\${p.key} on feature/${p.key}-* branches cut from dev · ${p.autoMerge !== false ? `Auto-merge on: worker PRs merge into dev when ${p.checkCmd ? p.checkCmd : 'the project check (npm run check / npm test)'} passes` : 'Auto-merge off: worker PRs wait for you'} · only you release dev → prod.`")
+# job detail: merge result and check output
+js = rep(js, "  const sig = j.id + j.status + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '')",
+         "  const sig = j.id + j.status + (j.merge ? j.merge.status : '') + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '')")
+js = rep(js, "    if (prHTML(j)) h += `<p style=\"margin:6px 0\">${prHTML(j)}</p>`;",
+         "    if (prHTML(j)) h += `<p style=\"margin:6px 0\">${prHTML(j)}</p>`;\n    if (j.merge) h += `<p style=\"margin:6px 0\">${mergeHTML(j)}</p>${j.merge.check && j.merge.check.output && !j.merge.check.ok ? `<pre class=\"files\" style=\"white-space:pre-wrap\">${esc(j.merge.check.output.slice(-1500))}</pre>` : ''}`;")
+js = rep(js, "let paintedCode = '';", r"""function mergeHTML(j) {
+  const m = j.merge; if (!m) return '';
+  const c = m.check ? ` <code>${esc(m.check.cmd)}</code> ${m.check.ok ? `passed in ${fmtDur(m.check.ms)}` : 'failed'}` : '';
+  if (m.status === 'merged') return `<span style="color:var(--ok)">Auto-merged into dev ·${c || ' merged'}</span>`;
+  if (m.status === 'blocked') return `<span style="color:var(--warn)">Left open for you: ${esc(m.reason)}</span>`;
+  return `<span>Auto-merge: checking…</span>`;
+}
+let paintedCode = '';""")
+# task drawer rows
+js = rep(js, "${j.kind === 'code' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}</div>` : ''}",
+         "${j.kind === 'code' ? `<div class=\"legend\" style=\"margin:2px 0 6px 40px\">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}${j.merge ? `<span>${mergeHTML(j)}</span>` : ''}</div>` : ''}")
+js = rep(js, "  const sig = js.map(j => j.id + j.status + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '')",
+         "  const sig = js.map(j => j.id + j.status + (j.merge ? j.merge.status : '') + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '')")
+# Control room alerts: PRs auto-merge left open (until merged, or 24 h)
+js = rep(js, "  if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);",
+         "  if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);\n  for (const j of jobs.filter(j => j.merge && j.merge.status === 'blocked' && j.pr && !j.pr.merged && j.finishedAt > Date.now() - 24 * 3600e3)) { const t = j.taskId && taskById(j.taskId); out.push(['warn', `PR #${j.pr.number}${t ? ` (${taskKey(t)})` : ''} was not auto-merged: ${j.merge.reason}. It is open for you on GitHub.`]); }")
+
 page = f"""<!doctype html>
 <html lang="en">
 <head>

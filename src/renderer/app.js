@@ -530,6 +530,7 @@ function alerts() {
   if (oldest > 120e3) out.push(['warn', `A job has waited ${fmtDur(oldest)} in the queue. Allow more jobs at once or assign it to another worker.`]);
   for (const j of jobs.filter(j => j.status === 'running' && runMs(j) > 180e3)) out.push(['warn', `Job #${j.n} has been running for ${fmtDur(runMs(j))}.`]);
   if (Date.now() - lastRateLimit < 10 * 60e3) out.push(['warn', 'Your Claude plan hit a usage limit in the last 10 minutes.']);
+  for (const j of jobs.filter(j => j.merge && j.merge.status === 'blocked' && j.pr && !j.pr.merged && j.finishedAt > Date.now() - 24 * 3600e3)) { const t = j.taskId && taskById(j.taskId); out.push(['warn', `PR #${j.pr.number}${t ? ` (${taskKey(t)})` : ''} was not auto-merged: ${j.merge.reason}. It is open for you on GitHub.`]); }
   if (ready && !sampleFn) out.push(['info', `${cliInfo.message} New jobs wait in the queue until it's ready.`]);
   return out;
 }
@@ -627,17 +628,25 @@ function prHTML(j) {
   if (j.prError) return `<span style="color:var(--warn)">${esc(j.prError)}</span>`;
   return '';
 }
+function mergeHTML(j) {
+  const m = j.merge; if (!m) return '';
+  const c = m.check ? ` <code>${esc(m.check.cmd)}</code> ${m.check.ok ? `passed in ${fmtDur(m.check.ms)}` : 'failed'}` : '';
+  if (m.status === 'merged') return `<span style="color:var(--ok)">Auto-merged into dev ·${c || ' merged'}</span>`;
+  if (m.status === 'blocked') return `<span style="color:var(--warn)">Left open for you: ${esc(m.reason)}</span>`;
+  return `<span>Auto-merge: checking…</span>`;
+}
 let paintedCode = '';
 function paintCode(j) {
   const box = $('jdCode');
   if (!j || (j.kind !== 'code' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }
-  const sig = j.id + j.status + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + JSON.stringify((j.proposals || []).map(x => x.accepted)) + (j.diff ? j.diff.insertions + '/' + j.diff.deletions : '');
+  const sig = j.id + j.status + (j.merge ? j.merge.status : '') + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + JSON.stringify((j.proposals || []).map(x => x.accepted)) + (j.diff ? j.diff.insertions + '/' + j.diff.deletions : '');
   if (sig === paintedCode) return; paintedCode = sig;
   box.hidden = false;
   let h = '';
   if (j.kind === 'code') {
     h += `<span class="label">Code</span><div class="legend"><span>${esc(j.branch || 'preparing a branch…')}</span>${diffHTML(j.diff)}</div>`;
     if (prHTML(j)) h += `<p style="margin:6px 0">${prHTML(j)}</p>`;
+    if (j.merge) h += `<p style="margin:6px 0">${mergeHTML(j)}</p>${j.merge.check && j.merge.check.output && !j.merge.check.ok ? `<pre class="files" style="white-space:pre-wrap">${esc(j.merge.check.output.slice(-1500))}</pre>` : ''}`;
     if (j.diff && j.diff.files.length) h += `<ul class="files">${j.diff.files.map(f => `<li>${esc(f.file)} <b>+${f.add}</b> <i>−${f.del}</i></li>`).join('')}</ul>`;
     if ((j.steps || []).length) h += `<span class="label" style="margin-top:8px">Steps</span><ul class="steps">${j.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
   }
@@ -919,7 +928,7 @@ function renderBoard() {
   const note = $('bhRepo'), r = p.repo;
   note.hidden = !r;
   if (r) note.textContent = r.status === 'ready'
-    ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\worktrees\\${p.key} on feature/${p.key}-* branches cut from dev · PRs go into dev; only you release dev → prod.`
+    ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\worktrees\\${p.key} on feature/${p.key}-* branches cut from dev · ${p.autoMerge !== false ? `Auto-merge on: worker PRs merge into dev when ${p.checkCmd ? p.checkCmd : 'the project check (npm run check / npm test)'} passes` : 'Auto-merge off: worker PRs wait for you'} · only you release dev → prod.`
     : r.status === 'setting-up' ? `Setting up the repository from ${r.source}…` : `Repository problem: ${r.error}`;
   $('releaseBtn').hidden = !(r && r.status === 'ready');
   paintRelease(p);
@@ -1033,10 +1042,10 @@ function paintTaskRuns(force) {
   const t = editingTask; if (!t) return;
   if (taskIsNew) { $('tdRuns').innerHTML = ''; runsSig = ''; return; }
   const js = (t.jobs || []).map(jobById).filter(Boolean).reverse();
-  const sig = js.map(j => j.id + j.status + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + (j.steps || []).length).join('|');
+  const sig = js.map(j => j.id + j.status + (j.merge ? j.merge.status : '') + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + (j.steps || []).length).join('|');
   if (!force && sig === runsSig) return; runsSig = sig;
   const latest = js.find(j => j.output);
-  $('tdRuns').innerHTML = js.length ? `<span class="label">Factory runs</span><div class="joblist">${js.map(j => { const [sl, sc] = STATUS[j.status]; const w = byWorker(j.workerId || j.pref); return `<div class="job" data-job="${j.id}" role="button" tabindex="0"><img src="${avatar(w ? w.species : 'chick')}" alt=""><span class="txt">Job #${j.n} · ${w ? esc(w.name) : 'any worker'}</span><span class="pill" style="--c:${sc}">${sl}</span><span class="meta"><span>${j.startedAt ? fmtDur(runMs(j)) : 'waiting'}</span><span>≈${fmtNum(j.outTok || 0)} tok</span>${j.kind === 'code' && j.steps ? `<span>${j.steps.length} steps</span>` : ''}${j.diff ? `<span>+${j.diff.insertions} −${j.diff.deletions}</span>` : ''}<span>${ago(j.createdAt)}</span></span></div>${j.kind === 'code' ? `<div class="legend" style="margin:2px 0 6px 40px">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}</div>` : ''}`; }).join('')}</div>` +
+  $('tdRuns').innerHTML = js.length ? `<span class="label">Factory runs</span><div class="joblist">${js.map(j => { const [sl, sc] = STATUS[j.status]; const w = byWorker(j.workerId || j.pref); return `<div class="job" data-job="${j.id}" role="button" tabindex="0"><img src="${avatar(w ? w.species : 'chick')}" alt=""><span class="txt">Job #${j.n} · ${w ? esc(w.name) : 'any worker'}</span><span class="pill" style="--c:${sc}">${sl}</span><span class="meta"><span>${j.startedAt ? fmtDur(runMs(j)) : 'waiting'}</span><span>≈${fmtNum(j.outTok || 0)} tok</span>${j.kind === 'code' && j.steps ? `<span>${j.steps.length} steps</span>` : ''}${j.diff ? `<span>+${j.diff.insertions} −${j.diff.deletions}</span>` : ''}<span>${ago(j.createdAt)}</span></span></div>${j.kind === 'code' ? `<div class="legend" style="margin:2px 0 6px 40px">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}${j.merge ? `<span>${mergeHTML(j)}</span>` : ''}</div>` : ''}`; }).join('')}</div>` +
     (latest ? `<span class="label">Latest output · job #${latest.n}</span><div class="output">${md(latest.output)}</div>` : '') : '<div class="empty">Not sent to the factory yet.</div>';
 }
 function saveTaskForm() {
@@ -1075,6 +1084,7 @@ function openProject(p) {
   $('pdCtx').innerHTML = contexts.length ? contexts.map(c => `<label><input type="checkbox" data-c="${c.id}" ${pc.has(c.id) ? 'checked' : ''}> ${esc(c.title || 'Untitled')}<span>≈${fmtNum(tok(c.content))}</span></label>`).join('') : '<div class="empty">No context yet. Add entries in the Context library, then attach them here.</div>';
   $('pdDelete').hidden = !p;
   $('pdRepo').value = p && p.repo ? p.repo.source : '';
+  $('pdAuto').checked = !p || p.autoMerge !== false; $('pdCheck').value = (p && p.checkCmd) || '';
   paintRepoNote(p);
   $('taskDrawer').hidden = true; $('projDrawer').hidden = false;
   setTimeout(() => $('pdName').focus(), 30);
@@ -1094,8 +1104,9 @@ $('projForm').addEventListener('submit', e => {
   const key = $('pdKey').value.replace(/[^A-Za-z0-9]/g, '').toUpperCase().slice(0, 5) || keyFrom(name);
   const ctx = [...$('pdCtx').querySelectorAll('input[data-c]:checked')].map(i => i.dataset.c);
   const desc = $('pdDesc').value.trim();
-  if (editingProject) { Object.assign(editingProject, { name, key, desc, ctx, color: projColor }); saveProject(editingProject); }
-  else { const p = makeProject({ name, key, desc, ctx, color: projColor }); curProject = p.id; lsSet('burrowby.project', p.id); }
+  const merging = { autoMerge: $('pdAuto').checked, checkCmd: $('pdCheck').value.trim().slice(0, 300) };
+  if (editingProject) { Object.assign(editingProject, { name, key, desc, ctx, color: projColor }, merging); saveProject(editingProject); }
+  else { const p = makeProject({ name, key, desc, ctx, color: projColor }); Object.assign(p, merging); saveProject(p); curProject = p.id; lsSet('burrowby.project', p.id); }
   $('projDrawer').hidden = true; syncProjectSelect(); renderBoard(); toast(`Saved ${name}.`);
 });
 $('projDrawer').addEventListener('click', e => {

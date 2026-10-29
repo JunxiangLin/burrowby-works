@@ -121,7 +121,22 @@ The Board header then shows which folder workers can edit, and a **Release to pr
    - the files changed, with + and − lines
    - every step the worker took
 
-Merging: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
+**Auto-merge into dev** is a per-project setting in the project drawer, on by default. After the app opens a worker's PR:
+
+1. It merges the latest `dev` into the worktree, locally and never pushed, so conflicts show up early and the check tests the merged result.
+2. It runs the project's **check command** in the worktree, with the same scrubbed environment workers get. Leave the command
+   empty to use `npm run check`, or `npm test`, from `package.json`.
+3. If the check passes and GitHub reports the PR as mergeable, the app merges it into `dev` with a merge commit, deletes the
+   branch, and moves the task to **Done**. Done because the change is integrated and verified; your gate is Release to prod, which
+   lists exactly the PRs that will ship.
+4. If the check fails, there's a conflict, or GitHub won't merge it:
+   - the PR stays open and the task stays in **Review**
+   - the job detail shows the reason and the tail of the check output
+   - the Control room raises an alert, and the pet tells you
+
+`prod` is never touched. With auto-merge off, or on a project with no check command, PRs wait for you.
+
+Merging by hand: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
 Releasing: only the **Release to prod** button on the Board does it.
 - **Board status:** a line under the project shows what would ship. It's worked out from freshly fetched `origin/prod..origin/dev`
   and refreshed every minute: commit count and the PRs merged in them. The button shows the count, for example
