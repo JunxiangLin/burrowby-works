@@ -1,4 +1,4 @@
-// BW-1 tests: `node scripts/test-autosave.js`. Autosave persists across restarts and save failures are reported.
+// BW-1 tests: `node scripts/autosave.test.js`. Autosave persists across restarts and save failures are reported.
 const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
