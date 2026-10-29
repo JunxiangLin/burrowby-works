@@ -20,10 +20,11 @@ const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progre
 const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
-const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
+const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped', interrupted: 'interrupted' };
+const DEFAULT_JOB_TIMEOUT_MS = 15 * 60 * 1000;
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa'];
+  'interruptedAt', 'timedOut', 'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
@@ -157,9 +158,11 @@ const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled')
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
 class Engine extends EventEmitter {
-  constructor({ dir, claude, repos = null }) {
+  constructor({ dir, claude, repos = null, jobTimeoutMs = DEFAULT_JOB_TIMEOUT_MS }) {
     super();
     this.dir = dir;
+    // Max run time per job; 0 or less disables it. May be a function so settings changes apply to new jobs.
+    this.jobTimeoutMs = jobTimeoutMs;
     this.repos = repos; // Repos instance (src/repos.js); null disables coding jobs
     this.file = path.join(dir, 'works.json');
     this.claude = claude; // { exe(), modelFor(tier), run(opts), stream(opts), cwd }
@@ -175,10 +178,36 @@ class Engine extends EventEmitter {
     fs.mkdirSync(this.dir, { recursive: true });
     const d = readJson(this.file) || {};
     this.applyData(d, true);
-    // Jobs that were running when the app closed did not finish.
+    this.recoverOrphans();
+  }
+
+  // Jobs left 'running' when the app closed have no live worker (controllers is empty at load).
+  recoverOrphans() {
+    const now = Date.now();
+    let n = 0;
     for (const j of this.jobs) {
-      if (j.status === 'running') Object.assign(j, { status: 'failed', error: 'interrupted', finishedAt: j.finishedAt || Date.now() });
+      if (j.status !== 'running' || this.controllers.has(j.id)) continue;
+      Object.assign(j, { status: 'interrupted', interruptedAt: now, finishedAt: j.finishedAt || now });
+      delete j.error;
+      j.worktree = null;
+      n++;
     }
+    if (n) this.saveNow();
+    return n;
+  }
+
+  // Aborts the job after the configured timeout and returns a function that clears the timer.
+  armTimeout(j, ctl) {
+    const ms = Number(typeof this.jobTimeoutMs === 'function' ? this.jobTimeoutMs() : this.jobTimeoutMs);
+    if (!(ms > 0)) return () => {};
+    const t = setTimeout(() => { j.timedOut = true; ctl.abort(); }, ms);
+    return () => clearTimeout(t);
+  }
+
+  // A job aborted by its timeout is flagged failed/timeout instead of stopped.
+  flagTimeout(j) {
+    if (!j.timedOut) return;
+    Object.assign(j, { status: 'failed', error: 'timeout', errorDetail: 'The job ran past its time limit and was stopped.' });
   }
 
   applyData(d, initial) {
@@ -357,6 +386,7 @@ class Engine extends EventEmitter {
     this.jobChanged(j);
     const ctl = new AbortController();
     this.controllers.set(j.id, ctl);
+    const stopTimer = this.armTimeout(j, ctl);
     let lastEmit = 0;
     const onText = (text) => {
       if (!j.firstTokenAt) j.firstTokenAt = Date.now();
@@ -393,6 +423,8 @@ class Engine extends EventEmitter {
       if (e.code === 'rate_limited') this.lastRateLimit = Date.now();
       if (typeof e.text === 'string' && e.text) j.output = e.text.slice(0, MAX_OUTPUT);
     }
+    stopTimer();
+    this.flagTimeout(j);
     j.finishedAt = Date.now();
     this.controllers.delete(j.id);
     this.jobChanged(j);
@@ -461,6 +493,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     this.jobChanged(j);
     const ctl = new AbortController();
     this.controllers.set(j.id, ctl);
+    const stopTimer = this.armTimeout(j, ctl);
     const step = (label) => { j.steps = [...(j.steps || []), redact(label)].slice(-200); this.jobChanged(j, { persist: false }); };
     let wt = null;
     let ready = false; // auto-merge: checks passed in QA's worktree, merge after cleanup
@@ -511,6 +544,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (wt) { await this.repos.removeWorktree(p.key, wt.dir).catch(() => {}); j.worktree = null; }
     if (ready && end.status === 'done') await this.finishAutoMerge(j, p, t, ref, step);
     Object.assign(j, end);
+    stopTimer();
+    this.flagTimeout(j);
     j.finishedAt = Date.now();
     this.controllers.delete(j.id);
     this.jobChanged(j);
@@ -570,6 +605,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     this.jobChanged(j);
     const ctl = new AbortController();
     this.controllers.set(j.id, ctl);
+    const stopTimer = this.armTimeout(j, ctl);
     const step = (label) => { j.steps = [...(j.steps || []), redact(label)].slice(-200); this.jobChanged(j, { persist: false }); };
     let wt = null;
     try {
@@ -638,6 +674,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       else { j.status = 'failed'; j.error = typeof e.code === 'string' && /^[a-z_]+$/.test(e.code) ? e.code : 'upstream_error'; j.errorDetail = redact(e.message); }
       if (typeof e.text === 'string' && e.text) j.output = redact(e.text).slice(0, MAX_OUTPUT);
     }
+    stopTimer();
+    this.flagTimeout(j);
     j.finishedAt = Date.now();
     this.controllers.delete(j.id);
     this.jobChanged(j);

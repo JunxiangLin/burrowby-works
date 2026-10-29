@@ -12,7 +12,7 @@
   const GRAVITY = 2200; // px/s²
   const DRAG_THRESHOLD = 5;
   const HAT = { hat: '#FF8A3D', hatLine: '#D9652A', boss: true }; // the foreman's orange hat + clipboard
-  const STATUS = { queued: ['queued', 'var(--s-wait)'], running: ['running', 'var(--s-think)'], done: ['shipped', 'var(--ok)'], failed: ['failed', 'var(--crit)'], cancelled: ['stopped', 'var(--s-idle)'] };
+  const STATUS = { queued: ['queued', 'var(--s-wait)'], running: ['running', 'var(--s-think)'], done: ['shipped', 'var(--ok)'], failed: ['failed', 'var(--crit)'], cancelled: ['stopped', 'var(--s-idle)'], interrupted: ['interrupted', 'var(--crit)'] };
 
   const $ = (id) => document.getElementById(id);
   const cv = $('pet');

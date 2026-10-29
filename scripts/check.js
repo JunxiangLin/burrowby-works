@@ -129,6 +129,29 @@ const fakeClaude = {
   assert.strictEqual(reloaded.chat.length, 4);
   assert.strictEqual(reloaded.workers.length, 3);
 
+  // --- orphan recovery: a job left 'running' on disk becomes 'interrupted' with a timestamp
+  const odir = fs.mkdtempSync(path.join(os.tmpdir(), 'burrowby-orphan-'));
+  fs.writeFileSync(path.join(odir, 'works.json'), JSON.stringify({ jobs: [{ id: 'j_o1', n: 1, text: 'Orphan', status: 'running', createdAt: 1, startedAt: 2 }, { id: 'j_o2', n: 2, text: 'Waiting', status: 'queued', createdAt: 3 }] }));
+  const orphanEngine = new Engine({ dir: odir, claude: { ...fakeClaude, exe: () => '' } });
+  assert.strictEqual(orphanEngine.jobById('j_o1').status, 'interrupted');
+  assert.ok(orphanEngine.jobById('j_o1').interruptedAt > 0, 'interrupted jobs carry a timestamp');
+  assert.strictEqual(orphanEngine.jobById('j_o2').status, 'queued', 'queued jobs are left alone');
+  assert.strictEqual(JSON.parse(fs.readFileSync(path.join(odir, 'works.json'), 'utf8')).jobs[0].status, 'interrupted', 'recovery is persisted');
+  fs.rmSync(odir, { recursive: true, force: true });
+
+  // --- job timeout: an overrunning job is stopped and flagged
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'burrowby-timeout-'));
+  const slowClaude = { ...fakeClaude, stream: (opts) => new Promise((res, rej) => opts.signal.addEventListener('abort', () => rej(Object.assign(new Error('Stopped.'), { code: 'cancelled', aborted: true })))) };
+  const timeoutEngine = new Engine({ dir: tdir, claude: slowClaude, jobTimeoutMs: 60 });
+  const slow = timeoutEngine.createJob('Never finishes');
+  await wait(200);
+  assert.strictEqual(slow.status, 'failed');
+  assert.strictEqual(slow.error, 'timeout');
+  assert.strictEqual(slow.timedOut, true);
+  assert.ok(slow.finishedAt, 'timed-out job is finished');
+  clearTimeout(timeoutEngine.saveTimer);
+  fs.rmSync(tdir, { recursive: true, force: true });
+
   // --- import: merge renumbers clashing job numbers; replace swaps everything
   const exp = {
     format: 'burrowby-works-export', version: 1, exportedAt: Date.now(),

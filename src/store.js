@@ -8,6 +8,7 @@ const DEFAULT_CONFIG = {
   quickModel: 'claude-haiku-5-5',
   deepModel: 'claude-opus-5-5',
   roam: true,
+  jobTimeoutMin: 15, // stop and flag jobs that run longer than this; 0 = no limit
   claudePath: '', // empty = find claude.exe on PATH / ~/.local/bin
 };
 
