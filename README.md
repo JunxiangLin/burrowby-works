@@ -131,8 +131,10 @@ remote, and refuses if `prod` has commits that `dev` doesn't.
   or that is outside `%USERPROFILE%\Burrowby`.
 - Worker agents get an environment with nothing that looks like a token, secret, password or API key, and with git
   credentials disabled (`credential.helper` cleared, `GIT_TERMINAL_PROMPT=0`, `remote.origin.pushurl` set to an invalid URL).
-  Allowing `node`, `npm`, `python` and `docker` still lets an agent run arbitrary code inside its worktree. These settings make sure
-  that code can't push with your credentials.
+  These settings stop the agent's own `git push` and stop casual pushes from scripts. They are not a sandbox: allowing `node`, `npm`,
+  `python` and `docker` lets an agent run arbitrary code as you, and code determined to do so could undo them. The hard rules are
+  the tool allowlist (no `git push`, `gh`, `curl` or branch switching), the worktree, and the app owning push, PR and merge. Only
+  connect repositories whose contents you're comfortable letting a coding agent run code against.
 - Prompts never include credentials. Remote URLs, tool steps, errors and output are scrubbed of embedded credentials and
   GitHub or Anthropic tokens before they're shown or saved.
 - **Stop all jobs** sits in the Control room header, in the pet's right-click menu, and in the foreman's tools.

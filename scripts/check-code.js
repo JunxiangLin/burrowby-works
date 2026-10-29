@@ -13,6 +13,10 @@ const { Repos, redact } = require('../src/repos');
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 module.exports = async function codeChecks() {
+  // Hermetic git: when this check runs inside a coding worker's sandbox, the
+  // worker environment's GIT_CONFIG_* overrides (no credentials, no push URL)
+  // must not apply to the test's own temporary repositories.
+  for (const k of Object.keys(process.env)) if (/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(k)) delete process.env[k];
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'burrowby-code-'));
   const g = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
   const ident = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
