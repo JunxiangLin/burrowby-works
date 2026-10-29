@@ -162,17 +162,46 @@ class Repos {
 
   // Merge the latest dev into the worktree locally (never pushed), so a conflict
   // shows up before GitHub and the check runs on what the merge will produce.
-  async mergeDevInto(dir) {
+  // keep: on a conflict leave the merge in progress (for a coder to resolve) instead of aborting it.
+  async mergeDevInto(dir, { keep = false } = {}) {
     this.assertSafe(dir);
     await git(dir, 'fetch', 'origin', DEV);
     try {
       await run('git', ['-c', 'user.name=Burrowby Works', '-c', 'user.email=burrowby@localhost', 'merge', '--no-ff', '--no-edit', `origin/${DEV}`], { cwd: dir });
       return { conflict: false };
     } catch (e) {
-      const files = (await git(dir, 'diff', '--name-only', '--diff-filter=U').catch(() => '')).trim().split('\n').filter(Boolean);
-      await git(dir, 'merge', '--abort').catch(() => {});
+      const files = await this.conflictFiles(dir);
+      // No conflicting files means the merge failed for another reason: surface it, don't call it a conflict.
+      if (!files.length) { await git(dir, 'merge', '--abort').catch(() => {}); throw e; }
+      if (!keep) await git(dir, 'merge', '--abort').catch(() => {});
       return { conflict: true, files };
     }
+  }
+
+  async conflictFiles(dir) {
+    return (await git(dir, 'diff', '--name-only', '--diff-filter=U').catch(() => '')).trim().split('\n').filter(Boolean);
+  }
+
+  async abortMerge(dir) {
+    this.assertSafe(dir);
+    await git(dir, 'merge', '--abort').catch(() => {});
+  }
+
+  // After a coder edited the conflicted files: refuse leftover conflict markers, commit the merge
+  // (the app commits, not the agent), and confirm dev is really part of the branch.
+  async finishDevMerge(dir, files) {
+    this.assertSafe(dir);
+    const marker = /^(<{7}|>{7})(\s|$)/m;
+    const left = files.filter((f) => { try { return marker.test(fs.readFileSync(path.join(dir, f), 'utf8')); } catch { return false; } });
+    if (left.length) return { ok: false, reason: `conflict markers are still in ${left.join(', ')}` };
+    const unresolved = await this.conflictFiles(dir);
+    const inMerge = fs.existsSync(path.resolve(dir, (await git(dir, 'rev-parse', '--git-path', 'MERGE_HEAD')).trim()));
+    if (inMerge) {
+      await git(dir, 'add', '-A');
+      await run('git', ['-c', 'user.name=Burrowby Works', '-c', 'user.email=burrowby@localhost', 'commit', '--no-edit'], { cwd: dir });
+    } else if (unresolved.length) return { ok: false, reason: `still unresolved: ${unresolved.join(', ')}` };
+    try { await git(dir, 'merge-base', '--is-ancestor', `origin/${DEV}`, 'HEAD'); } catch { return { ok: false, reason: `${DEV} is not part of the branch after the merge` }; }
+    return { ok: true };
   }
 
   // Run the check command in the worktree. `env` is the scrubbed worker environment:

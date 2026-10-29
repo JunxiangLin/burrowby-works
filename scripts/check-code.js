@@ -104,16 +104,25 @@ module.exports = async function codeChecks() {
   };
   // Fake coding agent for project AUTO; the task title says what it does.
   let autoOrigin = null;
+  let resolveMode = 'good'; // BWI-35: what the fake coder does when asked to resolve a merge conflict: good | markers | nothing
+  const resolverRuns = [];
   async function autoAgent(opts) {
     const title = (opts.prompt.match(/^Task AUTO[^\n]*\n\n(.*)/) || [])[1] || 'untitled change'; // "AUTO-3" or "AUTO job #12"
     const file = (name, text) => fs.writeFileSync(path.join(opts.cwd, name), text);
+    if (/merge conflict with dev/.test(opts.prompt)) { // BWI-35: the coder is asked to resolve the conflict
+      resolverRuns.push(opts.prompt);
+      if (resolveMode === 'good') { file('shared.txt', 'mine and theirs\n'); g(opts.cwd, 'add', 'shared.txt'); }
+      else if (resolveMode === 'markers') { g(opts.cwd, 'add', 'shared.txt'); } // adds the file with its conflict markers
+      opts.onText('Resolved.');
+      return { text: 'Resolved.', stopReason: 'end_turn', inTok: 5, outTok: 5 };
+    }
     if (/^fail/.test(title)) file('fail.txt', 'oops\n');
     else if (/^race/.test(title)) {
       file('shared.txt', 'mine\n');
       // Meanwhile someone lands a conflicting change on dev.
       const other = path.join(tmp, `other-${Date.now()}`);
       g(tmp, 'clone', '-q', '-b', 'dev', autoOrigin, other);
-      fs.writeFileSync(path.join(other, 'shared.txt'), 'theirs\n');
+      fs.writeFileSync(path.join(other, 'shared.txt'), `theirs ${Date.now()}\n`); // the fake gh never really merges, so dev must change each time
       g(other, ...ident, 'commit', '-q', '-am', 'conflicting change on dev');
       g(other, 'push', '-q', 'origin', 'dev');
     } else file(`feature-${Date.now()}.txt`, `${title}\n`);
@@ -392,10 +401,37 @@ module.exports = async function codeChecks() {
   assert.ok(notices.some((n) => /needs you: checks failed/.test(n.text)), 'the owner is told');
 
   // dev moves on with a conflicting change while the coder runs -> caught in QA's worktree, PR left open.
-  const race = await runTask('race: edit shared.txt');
+  // BWI-35: a conflict is first handed to the original coder to resolve (checks re-run, branch pushed, then merged).
+  const mergesBefore = mergeCalls().length;
+  resolveMode = 'good';
+  const fixed = await runTask('race: edit shared.txt');
+  assert.strictEqual(resolverRuns.length, 1, 'the coder was asked to resolve the conflict once');
+  assert.match(resolverRuns[0], /shared\.txt/);
+  assert.strictEqual(fixed.q.merge.status, 'merged', JSON.stringify(fixed.q.merge));
+  assert.deepStrictEqual({ ...fixed.q.merge.conflict }, { files: ['shared.txt'], attempts: 1, resolved: true });
+  assert.ok(fixed.q.merge.check.ok, 'checks re-ran after the resolution');
+  assert.strictEqual(fixed.t.status, 'done');
+  assert.strictEqual(mergeCalls().length, mergesBefore + 1);
+  assert.ok(!fixed.t.mergeConflict && !(fixed.t.labels || []).includes('merge conflict'));
+  assert.strictEqual(g(autoOrigin, 'show', `${fixed.j.branch}:shared.txt`), 'mine and theirs', 'the resolved merge was pushed to the PR branch');
+  g(autoOrigin, 'merge-base', '--is-ancestor', 'dev', fixed.j.branch); // dev is part of the pushed branch
+
+  // Auto-resolve fails (markers left in the file) on every attempt -> PR open, Review, files listed, flagged for the owner, nothing half-merged.
+  resolveMode = 'markers';
+  resolverRuns.length = 0;
+  const race = await runTask('race: edit shared.txt again');
+  assert.strictEqual(resolverRuns.length, 2, 'limited to two attempts');
   assert.strictEqual(race.q.merge.status, 'blocked');
-  assert.match(race.q.merge.reason, /^conflicts with dev in shared\.txt/);
+  assert.match(race.q.merge.reason, /^merge conflict with dev in shared\.txt \(auto-resolve failed after 2: conflict markers are still in shared\.txt\)/);
+  assert.deepStrictEqual([race.q.merge.conflict.files, race.q.merge.conflict.attempts, race.q.merge.conflict.flagged], [['shared.txt'], 2, true]);
   assert.strictEqual(race.t.status, 'review');
+  assert.match(race.t.mergeConflict.note, /^Merge conflict with dev on PR #\d+: shared\.txt\. Automatic resolution failed after 2 attempts.*Needs the owner\.$/);
+  assert.ok(race.t.labels.includes('merge conflict') && race.t.labels.includes('needs owner'));
+  assert.ok(!race.q.pr.merged);
+  assert.strictEqual(mergeCalls().length, mergesBefore + 1, 'no merge attempted');
+  assert.notStrictEqual(g(autoOrigin, 'show', `${race.j.branch}:shared.txt`), 'mine and theirs', 'nothing was pushed');
+  assert.ok(notices.some((n) => /merge conflict the coder could not resolve \(shared\.txt\)/.test(n.text)), 'the owner is told');
+  assert.ok(!fs.existsSync(path.join(root, 'worktrees', 'AUTO', `qa-${race.j.branch.replace('feature/', '')}`)), 'worktree cleaned up');
 
   // GitHub says the PR is not mergeable -> left open.
   const ghc = await runTask('ghconflict: another feature');
@@ -410,7 +446,7 @@ module.exports = async function codeChecks() {
   assert.strictEqual(off.q.qa.verdict, 'pass');
   assert.strictEqual(off.q.merge, undefined);
   assert.strictEqual(off.t.status, 'review');
-  assert.strictEqual(mergeCalls().length, before + 1);
+  assert.strictEqual(mergeCalls().length, before + 2, 'only the clean PR and the auto-resolved PR were merged');
 
   // A coding job not tied to a task skips QA and auto-merges directly (as before QA existed).
   engine.upsert('projects', { ...engine.projectById(pa.id), autoMerge: true });
