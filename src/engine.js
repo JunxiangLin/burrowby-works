@@ -194,7 +194,12 @@ class Engine extends EventEmitter {
   // ---------- persistence ----------
   load() {
     fs.mkdirSync(this.dir, { recursive: true });
-    const d = readJson(this.file) || {};
+    let d = readJson(this.file);
+    if (!d && fs.existsSync(this.file)) {
+      // Unreadable file: keep a copy so the next autosave can't destroy it.
+      try { fs.copyFileSync(this.file, `${this.file}.corrupt-${Date.now()}`); } catch { /* reported on next save */ }
+    }
+    d = d || {};
     this.applyData(d, true);
     // Jobs that were running when the app closed did not finish.
     for (const j of this.jobs) {
@@ -245,10 +250,25 @@ class Engine extends EventEmitter {
 
   saveNow() {
     clearTimeout(this.saveTimer);
-    const data = { ...this.exportDoc(), jobs: this.jobs.slice(-MAX_JOBS).map(normJob) };
-    const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data));
-    fs.renameSync(tmp, this.file);
+    try {
+      const data = { ...this.exportDoc(), jobs: this.jobs.slice(-MAX_JOBS).map(normJob) };
+      const tmp = `${this.file}.tmp`;
+      fs.mkdirSync(this.dir, { recursive: true });
+      fs.writeFileSync(tmp, JSON.stringify(data));
+      fs.renameSync(tmp, this.file);
+      if (this.saveFailed) {
+        this.saveFailed = false;
+        this.emit('notice', { kind: 'save-ok', text: 'Saving works again. Your latest changes are safe.' });
+      }
+      return true;
+    } catch (e) {
+      // Never swallow: tell the owner in plain words and retry shortly.
+      this.saveFailed = true;
+      this.emit('notice', { kind: 'save-error', text: `Burrowby could not save your changes to ${this.file} (${e.code || e.message}). Check that the disk is not full and the folder is writable. It will keep trying.` });
+      clearTimeout(this.saveTimer);
+      this.saveTimer = setTimeout(() => this.saveNow(), 10000);
+      return false;
+    }
   }
 
   snapshot() {
