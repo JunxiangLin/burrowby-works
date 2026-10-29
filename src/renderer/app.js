@@ -1596,7 +1596,7 @@ function applyCli(st) {
 }
 api.onPatch(applyPatch);
 api.onReset(s => { selJob = null; selWorker = null; editingTask = null; $('taskDrawer').hidden = true; $('projDrawer').hidden = true; loadSnapshot(s); renderDash(); setView(view); paintChatNow(); });
-api.onNotice(n => { if (['task-review', 'task-testing', 'task-qa-fail'].includes(n.kind)) toast(n.text); });
+api.onNotice(n => { if (['task-review', 'task-testing', 'task-qa-fail', 'save-error', 'save-ok'].includes(n.kind)) toast(n.text); });
 api.onCliStatus(applyCli);
 api.onShowView(v => setView(v));
 (async () => {
