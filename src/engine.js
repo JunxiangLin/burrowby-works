@@ -6,6 +6,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const { redact } = require('./repos');
+const { estimateCost } = require('./pricing');
 
 // ---------- constants (from the artifact) ----------
 const SPECIES = ['bunny', 'cat', 'bear', 'frog', 'chick', 'axolotl'];
@@ -23,7 +24,7 @@ const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa'];
+  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'cost'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
@@ -394,6 +395,8 @@ class Engine extends EventEmitter {
       if (typeof e.text === 'string' && e.text) j.output = e.text.slice(0, MAX_OUTPUT);
     }
     j.finishedAt = Date.now();
+    const cost = estimateCost(j.model, j.inTok, j.outTok);
+    if (cost != null) j.cost = cost;
     this.controllers.delete(j.id);
     this.jobChanged(j);
     this.onJobFinished(j);
@@ -512,6 +515,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (ready && end.status === 'done') await this.finishAutoMerge(j, p, t, ref, step);
     Object.assign(j, end);
     j.finishedAt = Date.now();
+    const cost = estimateCost(j.model, j.inTok, j.outTok);
+    if (cost != null) j.cost = cost;
     this.controllers.delete(j.id);
     this.jobChanged(j);
     this.onJobFinished(j);
@@ -639,6 +644,8 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       if (typeof e.text === 'string' && e.text) j.output = redact(e.text).slice(0, MAX_OUTPUT);
     }
     j.finishedAt = Date.now();
+    const cost = estimateCost(j.model, j.inTok, j.outTok);
+    if (cost != null) j.cost = cost;
     this.controllers.delete(j.id);
     this.jobChanged(j);
     this.onJobFinished(j);

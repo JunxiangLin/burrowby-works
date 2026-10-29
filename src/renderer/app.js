@@ -9,6 +9,7 @@ const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const pct = (arr, p) => { if (!arr.length) return 0; const s = [...arr].sort((a, b) => a - b); return s[Math.min(s.length - 1, Math.floor(p * (s.length - 1) + 0.5))]; };
 const fmtDur = ms => ms == null || isNaN(ms) ? '–' : ms < 1000 ? `${Math.round(ms)} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.floor(ms / 60000)}m ${String(Math.round(ms % 60000 / 1000)).padStart(2, '0')}s`;
+const fmtCost = c => c < 0.01 ? '<$0.01' : '$' + c.toFixed(2);
 const fmtNum = n => n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e4 ? (n / 1e3).toFixed(1) + 'k' : Math.round(n).toLocaleString();
 const ago = t => { const s = (Date.now() - t) / 1000; return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)}m ago` : s < 86400 ? `${Math.floor(s / 3600)}h ago` : `${Math.floor(s / 86400)}d ago`; };
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -597,7 +598,7 @@ function paintJobDetail() {
   $('jdSub').textContent = `${w ? w.name : 'Any free worker'} · ${TIER_LABEL[j.tierApplied || j.tier]} model${j.simulated ? ' · simulated' : ''} · assigned ${ago(j.createdAt)}`;
   const wt = waitMs(j), th = j.startedAt ? (ttft(j) ?? runMs(j)) : 0, wr = j.firstTokenAt ? runMs(j) - ttft(j) : 0;
   const total = wt + th + wr || 1;
-  $('jdStats').innerHTML = [['Queued', fmtDur(wt)], ['To first token', j.firstTokenAt ? fmtDur(ttft(j)) : j.status === 'running' ? '…' : '–'], ['Run time', j.startedAt ? fmtDur(runMs(j)) : '–'], ['≈ Tokens', `${fmtNum(j.inTok || 0)}→${fmtNum(j.outTok || 0)}`]].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="val">${v}</div></div>`).join('');
+  $('jdStats').innerHTML = [['Queued', fmtDur(wt)], ['To first token', j.firstTokenAt ? fmtDur(ttft(j)) : j.status === 'running' ? '…' : '–'], ['Run time', j.startedAt ? fmtDur(runMs(j)) : '–'], ['≈ Tokens', `${fmtNum(j.inTok || 0)}→${fmtNum(j.outTok || 0)}`], ['Est. cost', j.cost != null ? fmtCost(j.cost) : '–']].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="val">${v}</div></div>`).join('');
   $('jdBar').innerHTML = `<span style="width:${wt / total * 100}%;background:var(--s-wait)"></span><span style="width:${th / total * 100}%;background:var(--s-think)"></span><span style="width:${wr / total * 100}%;background:${j.status === 'failed' ? 'var(--crit)' : 'var(--s-write)'}"></span>`;
   const speed = j.firstTokenAt && wr > 500 ? `<span>${Math.round((j.output || '').length / (wr / 1000))} chars/s</span>` : '';
   $('jdLegend').innerHTML = legendItems([['var(--s-wait)', 'queued', fmtDur(wt)], ['var(--s-think)', 'thinking', j.startedAt ? fmtDur(th) : '–'], ['var(--s-write)', 'writing', j.firstTokenAt ? fmtDur(wr) : '–']]) + speed;
@@ -931,6 +932,9 @@ function renderBoard() {
     ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\worktrees\\${p.key} on feature/${p.key}-* branches cut from dev · ${p.autoMerge !== false ? `Auto-merge on: worker PRs merge into dev when ${p.checkCmd ? p.checkCmd : 'the project check (npm run check / npm test)'} passes` : 'Auto-merge off: worker PRs wait for you'} · only you release dev → prod.`
     : r.status === 'setting-up' ? `Setting up the repository from ${r.source}…` : `Repository problem: ${r.error}`;
   $('releaseBtn').hidden = !(r && r.status === 'ready');
+  const pj = jobs.filter(j => j.projectId === p.id && j.cost != null);
+  $('bhCost').hidden = !pj.length;
+  $('bhCost').textContent = pj.length ? `Estimated cost so far: ${fmtCost(pj.reduce((s, j) => s + j.cost, 0))} across ${pj.length} finished job${pj.length === 1 ? '' : 's'} · ≈ ${fmtNum(pj.reduce((s, j) => s + (j.inTok || 0), 0))} tokens in, ≈ ${fmtNum(pj.reduce((s, j) => s + (j.outTok || 0), 0))} out (estimated)` : '';
   paintRelease(p);
   renderSuggest(); renderCols();
 }
@@ -974,10 +978,12 @@ function card(t) {
   if (j && isActive(j)) jp = `<span class="pill" style="--c:${j.status === 'queued' ? 'var(--s-wait)' : j.firstTokenAt ? 'var(--s-write)' : 'var(--s-think)'}">${j.status === 'queued' ? 'queued' : j.firstTokenAt ? 'writing' : 'thinking'} #${j.n}</span>`;
   else if (j && j.status === 'failed' && t.status !== 'done') jp = `<span class="pill" style="--c:var(--crit)">run failed</span>`;
   const nCtx = (t.ctx || []).length;
+  const tj = (t.jobs || []).map(jobById).filter(x => x && x.cost != null);
+  const cost = tj.length ? `<span class="lbl" title="Estimated from token counts and a price table">est. ${fmtCost(tj.reduce((s, x) => s + x.cost, 0))}</span>` : '';
   return `<div class="tcard" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
     <span class="tk">${esc(taskKey(t))} · ${PRIO[t.priority] ? PRIO[t.priority][0] : 'Medium'}</span>
     <span class="tt">${esc(t.title)}</span>
-    <span class="tf">${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
+    <span class="tf">${(t.labels || []).map(l => `<span class="lbl">${esc(l)}</span>`).join('')}${t.due ? `<span class="lbl ${late ? 'late' : ''}">${late ? 'overdue ' : 'due '}${esc(t.due.slice(5))}</span>` : ''}${nCtx ? `<span class="lbl">${nCtx} ctx</span>` : ''}${cost}${jp}${w ? `<img src="${avatar(w.species)}" alt="${esc(w.name)}" title="${esc(w.name)}">` : ''}</span>
   </div>`;
 }
 function renderCols() {

@@ -67,6 +67,9 @@ const fakeClaude = {
   assert.strictEqual(a.model, 'claude-haiku-5-5', 'quick tier -> quick model');
   assert.strictEqual(b.model, 'claude-sonnet-5-5');
   assert.strictEqual(a.outTok, 7, 'real token usage from the CLI');
+  assert.ok(Math.abs(a.cost - (100 * 1 + 7 * 5) / 1e6) < 1e-12, 'estimated cost from the price table (haiku)');
+  assert.ok(b.cost > a.cost, 'sonnet costs more than haiku for the same tokens');
+  assert.strictEqual(require('../src/pricing').estimateCost('unknown-model', 10, 10), null, 'unknown model has no estimate');
 
   const d = engine.createJob('Job D', 'w_biscuit');
   await wait(40);
