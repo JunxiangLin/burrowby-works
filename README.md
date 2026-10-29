@@ -64,6 +64,10 @@ ported from the artifact's source. The section switcher stays centered whichever
   Done columns, with drag and drop between them. The task drawer has title, description, status, priority, assignee, due date, labels, task context, run history and latest output.
   **Save and send to factory** moves the task to In progress, and to Review when the job ships (coding jobs pass through Testing first). **Suggest tasks** asks Claude
   for ideas. **Start with a sample project** sets up a demo.
+  **Job history** (button in the project header) lists that project's jobs, newest first, with worker, ticket, start and end time, status and
+  cost, and can be filtered by worker and status. Cost is the figure Claude Code reports for the job; it is blank for simulated jobs and
+  jobs run before cost tracking. **Retention:** the app keeps the newest 500 jobs across all projects (running and queued jobs are never
+  dropped); older finished jobs are deleted from `works.json` and disappear from the history.
 - **Context.** Entries have a title, type, tags and up to 80,000 characters of content. You can import text files and attach entries to projects or
   tasks. A meter shows each entry's share of the 60,000-character per-job context budget. Attached entries go into the job prompt
   exactly as in the artifact.
@@ -216,7 +220,7 @@ also move data back the other way.
 | What | Where |
 | --- | --- |
 | Credentials | None stored by this app. Claude Code keeps its own sign-in. |
-| Workers, jobs (the last 300), projects, tasks, context, chat | `%APPDATA%\burrowby-desk-pet\data\works.json` |
+| Workers, jobs (the last 500, see [Job history](#the-main-window)), projects, tasks, context, chat | `%APPDATA%\burrowby-desk-pet\data\works.json` |
 | Project clones | `%USERPROFILE%\Burrowby\projects\<KEY>` |
 | Worker worktrees (removed after each push) | `%USERPROFILE%\Burrowby\worktrees\<KEY>\` |
 | App settings (models, `claude.exe` path, roaming) | `%APPDATA%\burrowby-desk-pet\data\config.json` |

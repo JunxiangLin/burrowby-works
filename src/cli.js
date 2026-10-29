@@ -238,6 +238,7 @@ function stream({ exe, prompt, systemPrompt, model, cwd, signal, onText = () => 
         inTok: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
         outTok: u.output_tokens || 0,
         model: Object.keys(result.modelUsage || {})[0] || null,
+        costUsd: typeof result.total_cost_usd === 'number' ? result.total_cost_usd : undefined,
       });
     });
     child.stdin.end(prompt);

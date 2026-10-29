@@ -898,6 +898,7 @@ async function sendTask(t) {
   return j;
 }
 function onJobFinished(j) {
+  if (view === 'board' && histOpen) renderHistory();
   const t = j.taskId && taskById(j.taskId); if (!t) return;
   if (view === 'board' && !dragging) renderCols();
   if (editingTask === t) paintTaskRuns(true);
@@ -932,8 +933,30 @@ function renderBoard() {
     : r.status === 'setting-up' ? `Setting up the repository from ${r.source}…` : `Repository problem: ${r.error}`;
   $('releaseBtn').hidden = !(r && r.status === 'ready');
   paintRelease(p);
-  renderSuggest(); renderCols();
+  renderSuggest(); renderCols(); renderHistory();
 }
+// Job history: one row per job of the current project, newest first, filterable by worker and status.
+let histOpen = false;
+const fmtClock = t => t ? new Date(t).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '–';
+function renderHistory() {
+  $('history').hidden = !histOpen; $('cols').hidden = histOpen;
+  $('historyBtn').setAttribute('aria-pressed', String(histOpen));
+  if (!histOpen) return;
+  const wsel = $('histWorker'), wcur = wsel.value;
+  wsel.innerHTML = '<option value="">All</option>' + workers.map(w => `<option value="${w.id}">${esc(w.name)}</option>`).join('');
+  wsel.value = [...wsel.options].some(o => o.value === wcur) ? wcur : '';
+  const st = $('histStatus').value;
+  const all = jobs.filter(j => j.projectId === curProject);
+  const list = all.filter(j => (!wsel.value || (j.workerId || j.pref) === wsel.value) && (!st || j.status === st)).reverse();
+  $('histCount').textContent = `${list.length} of ${all.length} jobs`;
+  $('histRows').innerHTML = list.length ? list.map(j => {
+    const w = byWorker(j.workerId || j.pref), t = j.taskId && taskById(j.taskId), [sl, sc] = STATUS[j.status];
+    return `<tr data-job="${j.id}"><td>#${j.n} ${esc(j.text.slice(0, 80))}</td><td>${t ? esc(taskKey(t)) : '–'}</td><td>${w ? esc(w.name) : 'any'}</td><td>${fmtClock(j.startedAt)}</td><td>${fmtClock(j.finishedAt)}</td><td><span class="pill" style="--c:${sc}">${sl}</span></td><td>${typeof j.costUsd === 'number' ? '$' + j.costUsd.toFixed(j.costUsd < 1 ? 3 : 2) : '–'}</td></tr>`;
+  }).join('') : `<tr><td colspan="7" class="empty">${all.length ? 'No jobs match these filters.' : 'No jobs for this project yet.'}</td></tr>`;
+}
+$('historyBtn').addEventListener('click', () => { histOpen = !histOpen; renderHistory(); });
+$('histWorker').addEventListener('change', renderHistory);
+$('histStatus').addEventListener('change', renderHistory);
 let repoRoot = '%USERPROFILE%\\Burrowby';
 api.repoInfo().then(i => { repoRoot = i.root; if (view === 'board') renderBoard(); }).catch(() => {});
 // Release status: what "Release to prod" would ship, from freshly fetched refs

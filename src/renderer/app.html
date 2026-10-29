@@ -143,6 +143,7 @@
           <span style="flex:1"></span>
           <label class="sr" for="boardSearch">Search tasks</label>
           <input class="search" id="boardSearch" type="search" placeholder="Search tasks">
+          <button class="btn small" type="button" id="historyBtn" aria-pressed="false" title="Job history for this project">Job history</button>
           <button class="btn small" type="button" id="suggestBtn">Suggest tasks</button>
           <button class="btn small" type="button" id="releaseBtn" hidden title="Fast-forward prod to dev. Only you can do this.">Release to prod</button>
           <button class="btn small" type="button" data-act="edit-project">Edit project</button>
@@ -152,6 +153,16 @@
           <p class="desc repo-note" id="bhRelease" hidden></p>
         </div>
         <div class="suggest" id="suggest" hidden></div>
+        <div class="history" id="history" hidden>
+          <div class="hist-bar">
+            <label for="histWorker">Worker</label><select id="histWorker"></select>
+            <label for="histStatus">Status</label>
+            <select id="histStatus"><option value="">All</option><option value="queued">Queued</option><option value="running">Running</option><option value="done">Shipped</option><option value="failed">Failed</option><option value="cancelled">Stopped</option></select>
+            <span class="sub" id="histCount"></span>
+          </div>
+          <div class="hist-wrap"><table class="hist-table"><thead><tr><th>Job</th><th>Ticket</th><th>Worker</th><th>Started</th><th>Ended</th><th>Status</th><th>Cost</th></tr></thead><tbody id="histRows"></tbody></table></div>
+          <p class="desc">Job history keeps the newest 500 jobs across all projects; older finished jobs are dropped. Cost is reported by Claude Code and is blank for simulated or older jobs.</p>
+        </div>
         <div class="cols" id="cols"></div>
       </div>
     </section>

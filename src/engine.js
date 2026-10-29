@@ -21,8 +21,8 @@ const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
-const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
-const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
+const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 500, CTX_BUDGET = 60000; // MAX_JOBS: job history retention, newest 500 kept (see README)
+const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'costUsd', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
   'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
 const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
@@ -382,6 +382,7 @@ class Engine extends EventEmitter {
       if (!j.firstTokenAt && j.output) j.firstTokenAt = Date.now();
       j.truncated = res.stopReason === 'max_tokens' || res.text.length > MAX_OUTPUT;
       if (res.inTok) j.inTok = res.inTok;
+      if (res.costUsd != null) j.costUsd = res.costUsd;
       j.outTok = res.outTok || tok(j.output);
       if (res.model) j.model = res.model;
       if (res.stopReason === 'refusal') { j.status = 'failed'; j.error = 'refused'; }
@@ -495,6 +496,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       j.output = redact(res.text || j.output || '').slice(0, MAX_OUTPUT);
       j.outTok = res.outTok || tok(j.output);
       if (res.inTok) j.inTok = res.inTok;
+      if (res.costUsd != null) j.costUsd = res.costUsd;
       const q = parseQa(j.output);
       j.qa = { verdict: q.verdict, notes: q.notes.slice(0, 6000) };
       const fin = await this.repos.finishWorktree(wt.dir, wt.base, `${ref}: QA tests`);
@@ -604,6 +606,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       j.output = redact(res.text || j.output || '').slice(0, MAX_OUTPUT);
       j.outTok = res.outTok || tok(j.output);
       if (res.inTok) j.inTok = res.inTok;
+      if (res.costUsd != null) j.costUsd = res.costUsd;
       if (res.maxTurns) step(`Stopped at the ${CODE_MAX_TURNS}-turn limit`);
       // The app, not the agent, commits leftovers, pushes and opens the PR.
       const fin = await this.repos.finishWorktree(wt.dir, wt.base, `${ref}: ${t ? t.title : 'factory job'}`);
