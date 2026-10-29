@@ -59,7 +59,7 @@ ported from the artifact's source. The section switcher stays centered whichever
   - **Overview:** jobs shipped, success rate, run time p50/p95, time to first token p50/p95, queue and average wait, tokens, alerts,
     a stacked queued/thinking/writing chart, 5-minute throughput and worker utilization.
   - **Jobs:** a time breakdown for each job, with live streaming output, copy, stop, run again and delete.
-  - **Workers:** edit a worker's name, species and specialty, hire or retire workers, and set 1, 2 or 3 jobs at once.
+  - **Workers:** edit a worker's name, species and specialty, hire or retire workers, and set 1 to 12 jobs at once.
 - **Board.** Projects have a name, key, color, description and project context. Tasks live in Backlog, To do, In progress, Testing, Review and
   Done columns, with drag and drop between them. The task drawer has title, description, status, priority, assignee, due date, labels, task context, run history and latest output.
   **Save and send to factory** moves the task to In progress, and to Review when the job ships (coding jobs pass through Testing first). **Suggest tasks** asks Claude
@@ -227,7 +227,9 @@ also move data back the other way.
 
 Open the Factory, go to **Control room → Workers** and click **Hire a worker**. Then give the new worker a name, species, specialty and
 capability, and click **Save worker**. You can also ask the foreman, for example "hire a second coder called Sprout". The specialty is the worker's instructions, and the foreman reads it to decide who gets which job. You can have up to 12
-workers. To change how many jobs run at once, use the **Jobs at once** control at the top right of the Factory.
+workers. To change how many jobs run at once, use the **Jobs at once** control at the top right of the Factory. Pick a preset or type a number from 1 to 12; the value is saved across restarts.
+Lowering it never stops running jobs, it only holds back new ones until the running count drops. High values can hit API rate limits
+and put heavy load on your machine, because each running job uses its own git worktree.
 
 ## Checks
 

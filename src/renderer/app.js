@@ -752,7 +752,16 @@ $('concSeg').addEventListener('click', e => {
   const b = e.target.closest('[data-c]'); if (!b) return;
   concurrency = +b.dataset.c; syncConc(); store.saveFactory(); renderDash();
 });
-function syncConc() { for (const x of document.querySelectorAll('#concSeg button')) x.setAttribute('aria-pressed', String(+x.dataset.c === concurrency)); }
+$('concNum').addEventListener('change', e => {
+  const n = Math.round(+e.target.value);
+  if (n >= 1 && n <= 12) { concurrency = n; store.saveFactory(); renderDash(); }
+  syncConc();
+});
+function syncConc() {
+  for (const x of document.querySelectorAll('#concSeg button')) x.setAttribute('aria-pressed', String(+x.dataset.c === concurrency));
+  $('concNum').value = concurrency;
+  $('concNote').hidden = concurrency < 6;
+}
 document.querySelector('.obs').addEventListener('pointerdown', () => { holdRender = true; });
 window.addEventListener('pointerup', () => { setTimeout(() => { holdRender = false; }, 60); });
 function openJob(id) { selJob = id; paintedAct = null; paintedOut.id = null; holdRender = false; if (tab !== 'jobs') setTab('jobs'); else renderJobs(); }
