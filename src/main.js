@@ -276,6 +276,16 @@ async function exportToFile(parent) {
   return { ok: true, path: r.filePath };
 }
 
+async function exportAuditToFile(parent, taskId) {
+  const text = engine.auditText(taskId);
+  if (text == null) return { ok: false };
+  const t = engine.taskById(taskId);
+  const r = await dialog.showSaveDialog(parent, { title: 'Export audit trail', defaultPath: path.join(app.getPath('documents'), `${engine.taskKey(t)}-audit.txt`), filters: [{ name: 'Text', extensions: ['txt'] }] });
+  if (r.canceled || !r.filePath) return { ok: false };
+  fs.writeFileSync(r.filePath, text);
+  return { ok: true, path: r.filePath };
+}
+
 // ---------- IPC ----------
 function registerIpc() {
   const win = (e) => BrowserWindow.fromWebContents(e.sender);
@@ -310,6 +320,7 @@ function registerIpc() {
   ipcMain.handle('works:upsert', (_e, coll, obj) => engine.upsert(coll, obj));
   ipcMain.handle('works:remove', (_e, coll, id) => engine.remove(coll, id));
   ipcMain.handle('works:send-task', (_e, id) => engine.sendTask(id));
+  ipcMain.handle('works:export-audit', (e, id) => exportAuditToFile(win(e), String(id)));
   ipcMain.handle('works:sample-project', () => engine.sampleProject());
   ipcMain.handle('works:suggest-tasks', (_e, id) => engine.suggestTasks(id));
   ipcMain.handle('works:ask', (_e, text) => engine.askForeman(text));
