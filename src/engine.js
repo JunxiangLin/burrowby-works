@@ -186,6 +186,7 @@ class Engine extends EventEmitter {
     this.workers = Array.isArray(f.workers) && f.workers.length ? f.workers.filter((w) => w && w.id && w.name).map(normWorker) : DEFAULT_WORKERS.map(normWorker);
     this.concurrency = [1, 2, 3].includes(f.concurrency) ? f.concurrency : 2;
     this.foreman = normForeman(f.foreman);
+    this.autoAcceptPm = f.autoAcceptPm !== false;
     const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
     this.jobs = (d.jobs || []).filter((j) => j && j.id && j.text).map(normJob).sort(byCreated);
     this.projects = (d.projects || []).filter((p) => p && p.id && p.name).map(normProject).sort(byCreated);
@@ -196,7 +197,7 @@ class Engine extends EventEmitter {
   }
 
   factoryDoc() {
-    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman } };
+    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman }, autoAcceptPm: this.autoAcceptPm !== false };
   }
 
   exportDoc() {
@@ -410,6 +411,9 @@ class Engine extends EventEmitter {
         this.changed('tasks');
         this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
       }
+    }
+    if (j.kind === 'pm' && j.status === 'done' && this.autoAcceptPm !== false && Array.isArray(j.proposals) && j.proposals.length) {
+      try { this.acceptProposals(j.id); } catch (e) { /* no project: leave proposals for manual accept */ }
     }
     const w = this.byWorker(j.workerId);
     if (j.status === 'done') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `${w ? w.name : 'A worker'} finished job #${j.n}.${j.byForeman ? ' Want the summary?' : ''}` });
@@ -761,9 +765,14 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (!p) throw new Error('That job is not linked to a project, so its tickets have nowhere to go.');
     const want = Array.isArray(picks) && picks.length ? new Set(picks.map(Number)) : null;
     const added = [];
+    const norm = (s) => String(s || '').trim().toLowerCase();
+    const titles = new Set(this.tasks.filter((t) => t.projectId === p.id).map((t) => norm(t.title)));
     j.proposals = j.proposals.map((x, i) => {
       if (x.accepted || (want && !want.has(i))) return x;
-      const t = this.makeTask(this.projectById(p.id), { title: x.title, desc: x.desc, priority: x.priority, status: 'backlog', labels: ['proposed'] });
+      if (titles.has(norm(x.title))) return x; // duplicate of a ticket already on the board
+      titles.add(norm(x.title));
+      const note = `Created by job #${j.n}.`;
+      const t = this.makeTask(this.projectById(p.id), { title: x.title, desc: x.desc ? `${x.desc}\n\n${note}` : note, priority: x.priority, status: 'backlog', labels: ['proposed'] });
       added.push(this.taskKey(t));
       return { ...x, accepted: this.taskKey(t) };
     });
@@ -799,6 +808,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (Array.isArray(f.workers) && f.workers.length) this.workers = f.workers.filter((w) => w && w.id && w.name).slice(0, MAX_WORKERS).map(normWorker);
     if ([1, 2, 3].includes(f.concurrency)) this.concurrency = f.concurrency;
     if (f.foreman) this.foreman = normForeman(f.foreman);
+    if (typeof f.autoAcceptPm === 'boolean') this.autoAcceptPm = f.autoAcceptPm;
     this.changed('factory');
     this.schedule();
     return this.factoryDoc();
