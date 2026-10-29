@@ -759,7 +759,9 @@ $('concSeg').addEventListener('click', e => {
 $('concNum').addEventListener('change', e => setConc(+e.target.value));
 const maxConc = () => Math.min(12, Math.max(1, workers.length));
 function setConc(n) {
-  if (!Number.isInteger(n) || n < 1 || n > maxConc()) {
+  if (Number.isInteger(n) && n > workers.length && n <= 12) {
+    toast(`Jobs at once can't be more than the number of hired workers (${workers.length}). Hire more workers to raise the limit.`);
+  } else if (!Number.isInteger(n) || n < 1 || n > maxConc()) {
     toast(`Jobs at once must be a whole number from 1 to ${maxConc()} (you have ${workers.length} hired ${workers.length === 1 ? 'worker' : 'workers'}, max 12).`);
   } else {
     concurrency = n; renderDash();
