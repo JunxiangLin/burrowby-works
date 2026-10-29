@@ -641,6 +641,19 @@ class Engine extends EventEmitter {
     this.upsert('tasks', t);
     return j;
   }
+  // Save a context entry (note, decision, job output) and optionally attach it
+  // to a project so later jobs for that project receive it.
+  addContext({ title, kind = 'note', content, tags = [], project = null }) {
+    const c = this.upsert('contexts', { id: uid('c_'), title, kind, tags, content, createdAt: Date.now() });
+    const p = project && (this.projectById(project.id || project) || this.findProject(project));
+    if (p) this.upsert('projects', { ...p, ctx: [...new Set([...(p.ctx || []), c.id])] });
+    return c;
+  }
+  saveJobToContext(jobId) {
+    const j = this.jobById(jobId);
+    if (!j || !j.output) return null;
+    return this.addContext({ title: `Job #${j.n} output`, kind: 'doc', tags: ['job-output'], content: `${j.text}\n\n${j.output}`, project: j.projectId });
+  }
   sampleProject() {
     const now = Date.now();
     const voice = this.upsert('contexts', { id: uid('c_'), title: 'Blog voice guide', kind: 'style', tags: ['sample', 'writing'], content: 'Sample entry.\n\nWrite warmly and plainly, like a friendly neighbor who knows their stuff.\n- Short sentences. Active voice.\n- No jargon unless the reader would use it.\n- One idea per paragraph.\n- End with something the reader can do next.', createdAt: now });
@@ -829,6 +842,13 @@ class Engine extends EventEmitter {
         msg.actions.push(`Stopped ${n} job${n === 1 ? '' : 's'}`);
         return { stopped: n };
       },
+      save_context(i, msg) {
+        if (!String(i.title || '').trim() || !String(i.content || '').trim()) return { error: 'title and content are required' };
+        if (i.project && !E.findProject(i.project)) return { error: `No project ${i.project}` };
+        const c = E.addContext({ title: i.title, kind: i.kind, content: i.content, tags: Array.isArray(i.tags) ? i.tags : [], project: i.project });
+        msg.actions.push(`Saved context "${c.title}"`);
+        return { saved: c.title };
+      },
       search_context(i) {
         const q = String(i.query || '').toLowerCase();
         return E.contexts.filter((c) => !q || `${c.title} ${(c.tags || []).join(' ')} ${c.content}`.toLowerCase().includes(q)).slice(0, 6).map((c) => ({ title: c.title, type: KINDS[c.kind] || c.kind, approx_tokens: tok(c.content), excerpt: (c.content || '').slice(0, 600) }));
@@ -1007,6 +1027,7 @@ const TOOL_SPECS = [
   { name: 'create_task', description: 'Create a task card in a project.', input: { project: 'project key', title: 'short title', description: 'what to produce, with acceptance criteria', priority: Object.keys(PRIO).join(' | '), status: COLS.map((c) => c[0]).join(' | '), assignee: 'worker name' }, required: ['project', 'title'] },
   { name: 'update_task', description: 'Change a task: move columns, re-prioritize, reassign or edit text.', input: { task: 'task key like BLOG-3', title: '', description: '', status: COLS.map((c) => c[0]).join(' | '), priority: Object.keys(PRIO).join(' | '), assignee: 'worker name, or "" for any' }, required: ['task'] },
   { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then Review when done.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
+  { name: 'save_context', description: 'Save a note, decision or other fact to the context library so it survives restarts. Give a project key to send it with every job in that project.', input: { title: 'short title', content: 'the text to keep', kind: Object.keys(KINDS).join(' | '), tags: ['tag'], project: 'project key (optional)' }, required: ['title', 'content'] },
   { name: 'search_context', description: 'Search the context library and return short excerpts.', input: { query: 'words to look for' } },
   { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm"' } },
   { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm"' }, required: ['worker'] },
