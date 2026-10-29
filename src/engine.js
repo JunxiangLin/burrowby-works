@@ -1048,6 +1048,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
         if (!t) throw new Error(`No task ${i.task}`);
         if (i.title) t.title = String(i.title).slice(0, 140);
         if (i.description != null) t.desc = String(i.description).slice(0, 6000);
+        if (i.status === 'done' && t.status !== 'done' && /^\s*(#+\s*)?acceptance/im.test(t.desc || '') && !(t.acceptance && (t.acceptance.override || (t.acceptance.items || []).length && t.acceptance.items.every((x) => x.result === 'pass')))) throw new Error(`${E.taskKey(t)} has acceptance criteria that are not all marked pass. The owner must complete the QA checklist or override it before it can be Done.`);
         if (COLS.some((c) => c[0] === i.status) && i.status !== t.status) { t.status = i.status; t.order = Date.now(); }
         if (PRIO[i.priority]) t.priority = i.priority;
         if (i.assignee != null) { const w = E.findWorker(i.assignee); t.assignee = w ? w.id : ''; }

@@ -117,6 +117,29 @@ const fakeClaude = {
   foremanScript = [(opts) => { assert.match(opts.prompt, /Owner: Get Juniper/); return { reply: 'All done.', actions: [{ tool: 'get_factory_status', input: {} }] }; }, { reply: 'Everyone is idle.', actions: [] }];
   assert.strictEqual((await engine.askForeman('Status?')).message.text, 'Everyone is idle.');
 
+  // --- BWI-25: foreman cannot move a task with unchecked acceptance criteria to Done
+  {
+    const gp = engine.projects.find((x) => x.key === 'BLOG');
+    const g = engine.makeTask(gp, { title: 'Gated', desc: 'Intro.\nAcceptance: has a title; has a body', status: 'review' });
+    const key = engine.taskKey(g);
+    const upd = async (input) => { foremanScript = [{ reply: '', actions: [{ tool: 'update_task', input }] }, { reply: 'ok', actions: [] }]; await engine.askForeman('move it'); };
+    await upd({ task: key, status: 'done' });
+    assert.strictEqual(engine.taskById(g.id).status, 'review', 'blocked with no checklist results');
+    g.acceptance = { items: [{ text: 'has a title', result: 'pass' }, { text: 'has a body', result: 'fail' }], override: false };
+    await upd({ task: key, status: 'done' });
+    assert.strictEqual(engine.taskById(g.id).status, 'review', 'blocked while a criterion fails');
+    g.acceptance.override = true;
+    await upd({ task: key, status: 'done' });
+    assert.strictEqual(engine.taskById(g.id).status, 'done', 'owner override allows Done');
+    const g2 = engine.makeTask(gp, { title: 'Gated2', desc: 'Acceptance: one', status: 'review' });
+    g2.acceptance = { items: [{ text: 'one', result: 'pass' }], override: false };
+    await upd({ task: engine.taskKey(g2), status: 'done' });
+    assert.strictEqual(engine.taskById(g2.id).status, 'done', 'all pass allows Done');
+    const g3 = engine.makeTask(gp, { title: 'Plain', desc: 'No criteria here', status: 'review' });
+    await upd({ task: engine.taskKey(g3), status: 'done' });
+    assert.strictEqual(engine.taskById(g3.id).status, 'done', 'ungated tasks unaffected');
+  }
+
   // --- retire
   assert.strictEqual(engine.retireWorker('w_clover').ok, true);
   assert.strictEqual(engine.workers.length, 3);
@@ -125,8 +148,8 @@ const fakeClaude = {
   engine.saveNow();
   const reloaded = new Engine({ dir, claude: fakeClaude });
   assert.strictEqual(reloaded.jobs.length, engine.jobs.length);
-  assert.strictEqual(reloaded.tasks.length, 6);
-  assert.strictEqual(reloaded.chat.length, 4);
+  assert.strictEqual(reloaded.tasks.length, 9);
+  assert.strictEqual(reloaded.chat.length, 4 + 2 * 5);
   assert.strictEqual(reloaded.workers.length, 3);
 
   // --- import: merge renumbers clashing job numbers; replace swaps everything
