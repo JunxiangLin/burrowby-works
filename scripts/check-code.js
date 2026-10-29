@@ -132,10 +132,44 @@ module.exports = async function codeChecks() {
   // Merge only into dev; release fast-forwards prod to dev.
   assert.strictEqual((await engine.mergePr('DEMO', 1)).merged, true);
   await assert.rejects(engine.mergePr('DEMO', 99), /Only PRs into dev/);
-  g(origin, 'branch', '-f', 'dev', j1.branch); // stand-in for GitHub merging the PR
-  const rel = await engine.releaseToProd('DEMO');
-  assert.ok(rel.released && rel.commits === 1);
-  assert.strictEqual(g(origin, 'rev-parse', 'prod'), g(origin, 'rev-parse', 'dev'));
+  // Release to prod, in the situation the owner hit: two PRs merged into dev on
+  // GitHub (merge commits) after the app's clone last fetched, so its local
+  // origin/* refs are stale. The preview must fetch and see both.
+  const gh2 = path.join(tmp, 'github-side');
+  g(tmp, 'clone', '-q', origin, gh2);
+  g(gh2, 'checkout', '-q', '-b', 'pr2', 'origin/dev');
+  fs.writeFileSync(path.join(gh2, 'docs.md'), 'docs\n');
+  g(gh2, 'add', '-A');
+  g(gh2, ...ident, 'commit', '-q', '-m', 'DEMO-2: docs');
+  g(gh2, 'checkout', '-q', 'dev');
+  g(gh2, ...ident, 'merge', '--no-ff', '-q', '-m', `Merge pull request #1 from demo/${j1.branch}`, `origin/${j1.branch}`);
+  g(gh2, ...ident, 'merge', '--no-ff', '-q', '-m', 'Merge pull request #2 from demo/pr2', 'pr2');
+  g(gh2, 'push', '-q', 'origin', 'dev');
+  const clone = setup.folder;
+  assert.strictEqual(g(clone, 'rev-parse', 'origin/dev'), g(clone, 'rev-parse', 'origin/prod'), 'the clone is stale: it still thinks dev == prod');
+  const pv = await engine.releasePreview('DEMO');
+  assert.strictEqual(pv.ahead, 4, 'two merge commits plus the two feature commits');
+  assert.deepStrictEqual(pv.prs.sort(), [1, 2]);
+  assert.strictEqual(pv.diverged, false);
+  assert.match(pv.summary, /4 commits on dev not yet in prod \(PRs #\d, #\d\)/);
+  const rel = await engine.releaseToProd('DEMO', pv.devSha);
+  assert.ok(rel.released && rel.commits === 4, JSON.stringify(rel));
+  assert.strictEqual(g(origin, 'rev-parse', 'prod'), g(origin, 'rev-parse', 'dev'), 'prod fast-forwarded to dev');
+  assert.strictEqual(engine.projectById(p.id).lastRelease.sha, pv.dev, 'the release is recorded on the project');
+  assert.deepStrictEqual(engine.projectById(p.id).lastRelease.prs.sort(), [1, 2]);
+  // A second click finds nothing to ship and says so plainly.
+  const again = await engine.releaseToProd('DEMO');
+  assert.strictEqual(again.released, false);
+  assert.match(again.note, /^Nothing to release: prod already has everything in dev/);
+  // If prod gets a commit dev doesn't have, there is no fast-forward: refuse.
+  g(gh2, 'fetch', '-q');
+  g(gh2, 'checkout', '-q', '-B', 'prod', 'origin/prod');
+  g(gh2, ...ident, 'commit', '-q', '--allow-empty', '-m', 'hotfix on prod');
+  g(gh2, 'push', '-q', 'origin', 'prod');
+  const div = await engine.releasePreview('DEMO');
+  assert.ok(div.diverged && div.behind === 1);
+  await assert.rejects(engine.releaseToProd('DEMO'), /isn't possible. Merge prod into dev first/);
+  g(gh2, 'push', '-q', '-f', 'origin', `${pv.devSha}:refs/heads/prod`); // undo the hotfix for the checks below
 
   // Safety: no worktrees overlapping the folder the app runs from, or outside the Burrowby root.
   const unsafe = new Repos({ root, appDir: path.join(root, 'worktrees'), gh: fakeGh });

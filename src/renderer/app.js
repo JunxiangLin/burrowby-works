@@ -922,16 +922,41 @@ function renderBoard() {
     ? `Repo ${r.url}${r.github ? '' : ' (not on GitHub: no PRs)'} · Coders edit only in git worktrees under ${repoRoot}\\worktrees\\${p.key} on feature/${p.key}-* branches cut from dev · PRs go into dev; only you release dev → prod.`
     : r.status === 'setting-up' ? `Setting up the repository from ${r.source}…` : `Repository problem: ${r.error}`;
   $('releaseBtn').hidden = !(r && r.status === 'ready');
+  paintRelease(p);
   renderSuggest(); renderCols();
 }
 let repoRoot = '%USERPROFILE%\\Burrowby';
 api.repoInfo().then(i => { repoRoot = i.root; if (view === 'board') renderBoard(); }).catch(() => {});
+// Release status: what "Release to prod" would ship, from freshly fetched refs
+// (refreshed at most every 60 s, and right after a release), plus the last release.
+const releaseInfo = new Map(); // project id -> { at, preview | error }
+function paintRelease(p) {
+  const el = $('bhRelease'), btn = $('releaseBtn'), r = p.repo;
+  if (!r || r.status !== 'ready') { el.hidden = true; return; }
+  const info = releaseInfo.get(p.id);
+  if (!info || Date.now() - info.at > 60e3) refreshRelease(p.id);
+  const last = p.lastRelease ? ` · Last release ${esc(p.lastRelease.from)} → ${esc(p.lastRelease.sha)}${p.lastRelease.prs && p.lastRelease.prs.length ? ` (${p.lastRelease.prs.map(n => `#${n}`).join(', ')})` : ''}, ${ago(p.lastRelease.at)}` : '';
+  const pv = info && info.preview;
+  el.hidden = false;
+  el.innerHTML = (info && info.error ? `Couldn't check what would ship: ${esc(info.error)}` : pv ? esc(pv.summary) : 'Checking what would ship…') + last;
+  btn.textContent = pv && pv.ahead && !pv.diverged ? `Release to prod (${pv.ahead})` : 'Release to prod';
+  btn.disabled = !!(pv && (!pv.ahead || pv.diverged));
+  btn.title = pv ? pv.summary : 'Fast-forward prod to dev. Only you can do this.';
+}
+async function refreshRelease(id) {
+  releaseInfo.set(id, { ...(releaseInfo.get(id) || {}), at: Date.now() });
+  const res = await api.releasePreview(id);
+  releaseInfo.set(id, res.ok ? { at: Date.now(), preview: res.result } : { at: Date.now(), error: res.error });
+  const p = projectById(id);
+  if (p && view === 'board' && curProject === id) paintRelease(p);
+}
 $('releaseBtn').addEventListener('click', async () => {
   const p = projectById(curProject); if (!p) return;
   const btn = $('releaseBtn'); btn.disabled = true;
   const r = await api.releaseToProd(p.id); btn.disabled = false;
   if (!r.ok) toast(r.error);
-  else toast(r.result.released ? `Released ${r.result.commits} commit${r.result.commits === 1 ? '' : 's'} to prod (${r.result.sha}).` : r.result.note);
+  else toast(r.result.released ? `Released ${r.result.commits} commit${r.result.commits === 1 ? '' : 's'} to prod: ${r.result.from} → ${r.result.sha}${r.result.prs && r.result.prs.length ? ` (${r.result.prs.map(n => `#${n}`).join(', ')})` : ''}.` : r.result.note);
+  releaseInfo.delete(p.id); paintRelease(projectById(p.id));
 });
 function card(t) {
   const w = byWorker(t.assignee), j = lastJob(t);
