@@ -188,6 +188,7 @@ function contextBlock(ids, cap = 60000) {
   return out;
 }
 const ERROR_COPY = {
+  timeout: 'The job ran past its time limit and was stopped.',
   not_granted: 'Claude access was declined for this page.', sampling_disabled: 'Claude is not available for this account.',
   rate_limited: 'Claude is rate-limiting this page. Try again in a little while.', refused: 'Claude declined this job. Try rewording it.',
   empty_completion: 'Claude returned nothing. Try a simpler job.', prompt_too_large: 'The job text is too long.',
@@ -451,7 +452,7 @@ function workerStatus(w) {
   if (v.state === 'back') return ['heading back', 'var(--s-walk)'];
   return ['idle', 'var(--s-idle)'];
 }
-const STATUS = { queued: ['queued', 'var(--s-wait)'], running: ['running', 'var(--s-think)'], done: ['shipped', 'var(--ok)'], failed: ['failed', 'var(--crit)'], cancelled: ['stopped', 'var(--s-idle)'] };
+const STATUS = { queued: ['queued', 'var(--s-wait)'], running: ['running', 'var(--s-think)'], done: ['shipped', 'var(--ok)'], failed: ['failed', 'var(--crit)'], cancelled: ['stopped', 'var(--s-idle)'], interrupted: ['interrupted', 'var(--crit)'] };
 
 // ---------- markdown ----------
 function inline(s) { return s.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>'); }
@@ -573,7 +574,7 @@ function renderOverview() {
     </div>`;
 }
 function renderJobs() {
-  const list = jobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? isActive(j) : jobFilter === 'done' ? j.status === 'done' : j.status === 'failed' || j.status === 'cancelled')).slice().reverse();
+  const list = jobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? isActive(j) : jobFilter === 'done' ? j.status === 'done' : j.status === 'failed' || j.status === 'cancelled' || j.status === 'interrupted')).slice().reverse();
   $('jobList').innerHTML = list.length ? list.map(j => {
     const w = byWorker(j.workerId || j.pref); const [sl, sc] = STATUS[j.status];
     const dur = j.status === 'queued' ? `waiting ${fmtDur(waitMs(j))}` : j.startedAt ? fmtDur(runMs(j)) : '–';
@@ -610,7 +611,7 @@ function paintOutput() {
   const len = (j.output || '').length;
   if (paintedOut.id === j.id && paintedOut.len === len && paintedOut.status === j.status) return;
   const el = $('jdOutput'); const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-  let html = j.output ? md(j.output) : `<p class="placeholder">${j.status === 'queued' ? 'Waiting for a free worker.' : j.status === 'running' ? 'Thinking…' : j.status === 'failed' ? 'No output.' : j.status === 'cancelled' ? 'Stopped before any output.' : ''}</p>`;
+  let html = j.output ? md(j.output) : `<p class="placeholder">${j.status === 'queued' ? 'Waiting for a free worker.' : j.status === 'running' ? 'Thinking…' : j.status === 'failed' ? 'No output.' : j.status === 'cancelled' ? 'Stopped before any output.' : j.status === 'interrupted' ? 'The app closed before this job finished.' : ''}</p>`;
   if (j.status === 'failed') html += `<p class="placeholder" style="color:var(--crit)">${esc(ERROR_COPY[j.error] || 'The job failed.')} (${esc(j.error || 'error')})</p>`;
   if (j.truncated) html += '<p class="placeholder">The answer hit the length limit and was cut short.</p>';
   el.innerHTML = html;
@@ -972,7 +973,8 @@ function card(t) {
   const late = t.due && t.status !== 'done' && t.due < todayStr();
   let jp = '';
   if (j && isActive(j)) jp = `<span class="pill" style="--c:${j.status === 'queued' ? 'var(--s-wait)' : j.firstTokenAt ? 'var(--s-write)' : 'var(--s-think)'}">${j.status === 'queued' ? 'queued' : j.firstTokenAt ? 'writing' : 'thinking'} #${j.n}</span>`;
-  else if (j && j.status === 'failed' && t.status !== 'done') jp = `<span class="pill" style="--c:var(--crit)">run failed</span>`;
+  else if (j && j.status === 'interrupted' && t.status !== 'done') jp = `<span class="pill" style="--c:var(--crit)">interrupted</span>`;
+  else if (j && j.status === 'failed' && t.status !== 'done') jp = `<span class="pill" style="--c:var(--crit)">${j.error === 'timeout' ? 'timed out' : 'run failed'}</span>`;
   const nCtx = (t.ctx || []).length;
   return `<div class="tcard" draggable="true" data-task="${t.id}" role="button" tabindex="0" style="--pc:${PRIO[t.priority] ? PRIO[t.priority][1] : 'var(--s-walk)'}">
     <span class="tk">${esc(taskKey(t))} · ${PRIO[t.priority] ? PRIO[t.priority][0] : 'Medium'}</span>
@@ -1470,7 +1472,7 @@ function mergeJob(o) {
   const was = x.status;
   for (const k of Object.keys(x)) if (!(k in o)) delete x[k];
   Object.assign(x, o);
-  if (was !== x.status && (x.status === 'done' || x.status === 'failed' || x.status === 'cancelled')) onJobFinished(x);
+  if (was !== x.status && (x.status === 'done' || x.status === 'failed' || x.status === 'cancelled' || x.status === 'interrupted')) onJobFinished(x);
   if (selJob === x.id) { paintOutput(); paintJobActions(); }
   return x;
 }

@@ -364,6 +364,7 @@ app.whenReady().then(() => {
   store = new Store(path.join(app.getPath('userData'), 'data'));
   engine = new Engine({
     dir: store.dir,
+    jobTimeoutMs: () => Number(store.getConfig().jobTimeoutMin) * 60000,
     // Workers edit only in worktrees under %USERPROFILE%\Burrowby, never in the folder this app runs from.
     repos: new Repos({ appDir: app.getAppPath(), gh: runGh }),
     claude: {
