@@ -115,6 +115,8 @@ function run({ exe, prompt, systemPrompt, model, effort, jsonSchema, sessionId, 
 // --include-partial-messages`. Calls onText(fullTextSoFar) on every text delta,
 // so callers can record time to first token and show output live.
 // A short, human label for one agent tool call, shown as a step in the job.
+const WEB_TOOLS = ['WebSearch', 'WebFetch'];
+
 function describeStep(name, input = {}, cwd) {
   const rel = (f) => {
     if (!f) return '';
@@ -129,30 +131,45 @@ function describeStep(name, input = {}, cwd) {
     case 'Glob': return `Listed ${input.pattern || ''}`;
     case 'Grep': return `Searched for ${JSON.stringify(String(input.pattern || '').slice(0, 60))}`;
     case 'Bash': return `Ran ${String(input.command || '').split('\n')[0].slice(0, 120)}`;
+    case 'WebSearch': return `Searched the web: ${JSON.stringify(String(input.query || '').slice(0, 120))}`;
+    case 'WebFetch': return `Fetched ${String(input.url || '').slice(0, 200)}`;
     default: return `Used ${name}`;
   }
 }
 
 // opts.code (coding jobs): { tools, allowedTools, disallowedTools, maxTurns, env, timeoutMs, onStep }
-function stream({ exe, prompt, systemPrompt, model, cwd, signal, onText = () => {}, onRateLimit = () => {}, code = null }) {
-  if (!exe) return Promise.reject(new ClaudeError('Claude Code is not installed or not found. See Settings.'));
-  const args = [
-    '-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
-    '--strict-mcp-config', '--setting-sources', '', '--disable-slash-commands',
-    '--no-session-persistence', '--system-prompt', systemPrompt,
-  ];
+// The tool flags for a run: none (plain text), web-only (research), or the coding allowlist.
+function toolArgs({ code = null, web = null } = {}) {
+  const args = [];
   if (code) {
     // Only the listed tools exist; dontAsk denies anything not pre-allowed, and
     // nobody is asked at runtime.
     args.push('--tools', code.tools.join(','), '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--max-turns', String(code.maxTurns || 40));
     if (code.allowedTools && code.allowedTools.length) args.push('--allowedTools', ...code.allowedTools);
     if (code.disallowedTools && code.disallowedTools.length) args.push('--disallowedTools', ...code.disallowedTools);
+  } else if (web) {
+    // Only the two web tools exist and both are pre-allowed; anything else is denied without asking.
+    args.push('--tools', WEB_TOOLS.join(','), '--allowedTools', ...WEB_TOOLS, '--permission-mode', 'dontAsk', '--permission-prompts', 'none', '--max-turns', String(web.maxTurns || 12));
   } else {
     args.push('--tools', '');
   }
+  return args;
+}
+
+// opts.web (research jobs): { maxTurns, timeoutMs, onStep, onTool } — only WebSearch and WebFetch, no file or shell tools.
+function stream({ exe, prompt, systemPrompt, model, cwd, signal, onText = () => {}, onRateLimit = () => {}, code = null, web = null }) {
+  if (!exe) return Promise.reject(new ClaudeError('Claude Code is not installed or not found. See Settings.'));
+  const args = [
+    '-p', '--output-format', 'stream-json', '--include-partial-messages', '--verbose',
+    '--strict-mcp-config', '--setting-sources', '', '--disable-slash-commands',
+    '--no-session-persistence', '--system-prompt', systemPrompt,
+  ];
+  args.push(...toolArgs({ code, web }));
   if (model) args.push('--model', model);
-  const onStep = (code && code.onStep) || (() => {});
-  const limitMs = (code && code.timeoutMs) || RUN_TIMEOUT_MS;
+  const tooled = code || web;
+  const onStep = (tooled && tooled.onStep) || (() => {});
+  const onTool = (tooled && tooled.onTool) || (() => {});
+  const limitMs = (tooled && tooled.timeoutMs) || RUN_TIMEOUT_MS;
 
   return new Promise((resolve, reject) => {
     const child = spawn(exe, args, { cwd, env: (code && code.env) || process.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -188,7 +205,7 @@ function stream({ exe, prompt, systemPrompt, model, cwd, signal, onText = () => 
         return;
       }
       if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
-        for (const b of ev.message.content) if (b.type === 'tool_use') onStep(describeStep(b.name, b.input, cwd));
+        for (const b of ev.message.content) if (b.type === 'tool_use') { onTool(b.name, b.input || {}); onStep(describeStep(b.name, b.input, cwd)); }
       } else if (ev.type === 'stream_event') {
         const e = ev.event || {};
         if (e.type === 'content_block_start' && e.content_block && e.content_block.type === 'text' && text && !text.endsWith('\n\n')) {
@@ -221,7 +238,7 @@ function stream({ exe, prompt, systemPrompt, model, cwd, signal, onText = () => 
         return done(reject, fail(`Claude Code exited (${code}) without a result. ${detail}`.trim(), { code: 'upstream_error' }));
       }
       for (const d of result.permission_denials || []) onStep(`Blocked: ${describeStep(d.tool_name, d.tool_input, cwd)}`);
-      if (result.subtype === 'error_max_turns' && code) {
+      if (result.subtype === 'error_max_turns' && tooled) {
         // Out of turns is not fatal for a coding job: the app still commits what exists.
         return done(resolve, { text: text || 'Stopped at the turn limit.', stopReason: 'max_turns', inTok: 0, outTok: 0, model: null, maxTurns: true });
       }
@@ -244,4 +261,4 @@ function stream({ exe, prompt, systemPrompt, model, cwd, signal, onText = () => 
   });
 }
 
-module.exports = { findClaude, status, run, stream, describeStep, ClaudeError };
+module.exports = { findClaude, status, run, stream, describeStep, toolArgs, ClaudeError, WEB_TOOLS };
