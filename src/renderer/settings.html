@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Burrowby Works — Settings</title>
+    <style>
+      :root {
+        --paper: #fffaf0;
+        --paper-2: #f6ecd9;
+        --ink: #3d2c22;
+        --ink-soft: #7a6555;
+        --accent: #f29a16;
+        --line: #e2d2b8;
+        --ok: #2f7a3a;
+        --bad: #a8321f;
+      }
+      body {
+        margin: 0;
+        padding: 20px 24px;
+        background: var(--paper);
+        color: var(--ink);
+        font: 14px/1.5 'Segoe UI', system-ui, sans-serif;
+      }
+      h1 { font-size: 20px; margin: 0 0 4px; }
+      h2 { font-size: 15px; margin: 22px 0 6px; }
+      p.hint { color: var(--ink-soft); margin: 2px 0 8px; font-size: 13px; }
+      .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+      input[type='password'], input[type='text'], select {
+        font: inherit; padding: 6px 8px; border: 1.5px solid var(--line); border-radius: 8px; background: #fff; color: inherit;
+      }
+      input[type='password'], input[type='text'] { flex: 1; min-width: 200px; }
+      button {
+        font: inherit; border: none; border-radius: 8px; padding: 6px 12px; cursor: pointer; background: var(--paper-2); color: inherit;
+      }
+      button.primary { background: var(--accent); color: #fff; font-weight: 600; }
+      #key-status { font-weight: 600; }
+      .msg { min-height: 1.5em; font-size: 13px; }
+      .msg.ok { color: var(--ok); }
+      .msg.bad { color: var(--bad); }
+      ul { padding: 0; list-style: none; margin: 0; }
+      li { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 6px; background: #fff; }
+      li small { color: var(--ink-soft); display: block; }
+      code { background: var(--paper-2); padding: 0 4px; border-radius: 4px; }
+      .lbl { width: 110px; color: var(--ink-soft); }
+    </style>
+  </head>
+  <body>
+    <h1>⛑️ Burrowby Works</h1>
+    <p class="hint">Settings for the desktop app. Workers, jobs, projects and context are managed in the Burrowby Works window.</p>
+
+    <h2>Claude Code</h2>
+    <p class="hint">The pet talks to Claude through the Claude Code CLI on this PC, using the account it is signed in with (for example your claude.ai seat). No API key needed.</p>
+    <p>Status: <span id="cli-status">checking…</span></p>
+    <p class="hint" id="cli-detail"></p>
+    <div class="row">
+      <input id="cli-path" type="text" placeholder="Auto-detect claude.exe (leave empty)" spellcheck="false" />
+      <button id="save-path">Save path</button>
+      <button id="recheck" class="primary">Check again</button>
+    </div>
+    <div id="cli-msg" class="msg"></div>
+
+    <h2>Models</h2>
+    <p class="hint">Passed to <code>claude --model</code>. Use full ids like <code>claude-sonnet-5-5</code> or aliases like <code>sonnet</code>. The Factory's model picker and the foreman's Thinking setting choose between these.</p>
+    <div class="row"><label class="lbl" for="model">Balanced</label><input id="model" type="text" spellcheck="false" /></div>
+    <div class="row"><label class="lbl" for="quickModel">Quick</label><input id="quickModel" type="text" spellcheck="false" /></div>
+    <div class="row"><label class="lbl" for="deepModel">Deep-thinking</label><input id="deepModel" type="text" spellcheck="false" /></div>
+    <div class="row" style="margin-top: 6px"><button id="save-models">Save models</button></div>
+
+    <h2>Foreman</h2>
+    <div class="row">
+      <input id="fName" type="text" maxlength="20" placeholder="Name" style="min-width: 120px" />
+      <select id="fSpecies"></select>
+      <button id="save-foreman">Save</button>
+    </div>
+    <div class="row" style="margin-top: 6px"><label><input id="roam" type="checkbox" /> Roam along the taskbar</label></div>
+    <div id="cfg-msg" class="msg"></div>
+
+    <h2>Import from Burrowby Works</h2>
+    <p class="hint">In the Burrowby Works artifact, use <b>Export data</b> in the Control room, then pick that JSON file here. If you already have data in this app you can merge or replace.</p>
+    <div class="row"><button id="import" class="primary">Import a file…</button><button id="open-data">Open data folder</button></div>
+    <div id="import-msg" class="msg"></div>
+
+    <script src="settings.js"></script>
+  </body>
+</html>

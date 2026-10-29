@@ -1,0 +1,16 @@
+{
+  "name": "burrowby-desk-pet",
+  "version": "0.1.0",
+  "description": "Burrowby Works as one desktop app: a foreman pet on your Windows taskbar plus the factory, board and context library, powered by Claude Code",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "check": "node scripts/check.js",
+    "smoke": "electron scripts/smoke.js"
+  },
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^45.1.0"
+  }
+}

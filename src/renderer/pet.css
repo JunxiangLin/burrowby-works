@@ -1,0 +1,87 @@
+/* Tokens copied from the Burrowby Works artifact. */
+:root{
+  --bg:#ECEAE4; --panel:#FBFAF7; --panel-2:#F1EFEA; --line:#DAD6CC; --fg:#24231F; --muted:#6A665C;
+  --accent:#DC5434; --accent-soft:#F9DDD3;
+  --ok:#2C8C58; --warn:#B26F08; --crit:#C93A3A;
+  --s-wait:#B4AEA2; --s-think:#E9A23B; --s-write:#DC5434; --s-idle:#B4AEA2; --s-walk:#3E8FB0;
+  --f-display:"Baloo 2", "Trebuchet MS", system-ui, sans-serif;
+  --f-body:"Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono:"IBM Plex Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --gutter-l:max(16px, env(safe-area-inset-left, 0px));
+  --gutter-r:max(16px, env(safe-area-inset-right, 0px));
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#151513; --panel:#1D1C1A; --panel-2:#262522; --line:#36342F; --fg:#ECE9E2; --muted:#A29D91;
+    --accent:#FF7A57; --accent-soft:#4A2419;
+    --ok:#5BC98A; --warn:#F0A83A; --crit:#FF6B6B;
+    --s-wait:#5E5A52; --s-think:#F0B04F; --s-write:#FF7A57; --s-idle:#5E5A52; --s-walk:#5DB3D4;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#151513; --panel:#1D1C1A; --panel-2:#262522; --line:#36342F; --fg:#ECE9E2; --muted:#A29D91;
+  --accent:#FF7A57; --accent-soft:#4A2419;
+  --ok:#5BC98A; --warn:#F0A83A; --crit:#FF6B6B;
+  --s-wait:#5E5A52; --s-think:#F0B04F; --s-write:#FF7A57; --s-idle:#5E5A52; --s-walk:#5DB3D4;
+  color-scheme:dark;
+}
+
+html,body{margin:0;height:100%;overflow:hidden;background:transparent;font-family:var(--f-body);font-size:13.5px;line-height:1.45;color:var(--fg);user-select:none}
+*{box-sizing:border-box}
+button,input,textarea{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+[hidden]{display:none!important}
+
+/* ---------- pet ---------- */
+#pet{position:absolute;left:0;top:0;width:84px;height:84px;cursor:grab;touch-action:none;will-change:transform}
+#pet.held{cursor:grabbing}
+
+/* ---------- speech bubble (the artifact's .roam-say) ---------- */
+#bubble{position:absolute;left:0;top:0;max-width:240px;background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:14px;padding:7px 11px;font-size:12.5px;line-height:1.4;box-shadow:0 6px 20px rgba(0,0,0,.15);cursor:pointer}
+
+/* ---------- chat popover (the artifact's .roam-chat) ---------- */
+#popover{position:absolute;left:0;top:0;width:360px;height:440px;background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:0 14px 40px rgba(0,0,0,.22);display:flex;flex-direction:column;overflow:hidden;user-select:text}
+#popover header{display:flex;align-items:center;gap:6px;padding:9px 10px;border-bottom:1px solid var(--line);font-weight:700}
+#pop-av{width:26px;height:26px;border-radius:50%;background:var(--panel-2)}
+#pet-name{font-family:var(--f-display);font-size:16px}
+.grow{flex:1}
+nav{display:inline-flex;gap:2px;background:var(--panel-2);border:1px solid var(--line);border-radius:999px;padding:2px;margin-left:6px}
+.tab{border:0;background:none;border-radius:999px;padding:2px 10px;font-weight:700;font-size:12px;cursor:pointer;color:var(--muted)}
+.tab[aria-pressed="true"]{background:var(--fg);color:var(--panel)}
+#jobs-badge{display:inline-block;min-width:16px;padding:0 4px;border-radius:8px;background:var(--accent);color:#fff;font-size:10.5px;text-align:center}
+.btn{white-space:nowrap;border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:6px 14px;font-weight:600;cursor:pointer}
+.btn.small{padding:3px 10px;font-size:12px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.5;cursor:default}
+.view{flex:1;min-height:0;display:flex;flex-direction:column}
+#messages{flex:1;overflow-y:auto;padding:10px 12px;display:flex;flex-direction:column;gap:8px}
+.msg{display:flex}
+.msg .b{max-width:88%;padding:7px 11px;border-radius:14px;background:var(--panel-2);word-wrap:break-word}
+.msg.me{justify-content:flex-end}
+.msg.me .b{background:var(--accent);color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}
+.msg:not(.me) .b{border-bottom-left-radius:4px}
+.msg.err .b{background:var(--accent-soft)}
+.b p{margin:0 0 6px}.b p:last-child{margin:0}
+.b ul,.b ol{margin:4px 0;padding-left:18px}
+.b h4{margin:6px 0 4px;font-size:13px}
+.b pre{background:var(--bg);border-radius:8px;padding:6px 8px;overflow:auto;font:12px/1.4 var(--f-mono)}
+.b code{font-family:var(--f-mono);font-size:.92em}
+.acts{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}
+.acts span{font:11px var(--f-mono);border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:1px 7px;color:var(--muted)}
+.typing{display:inline-flex;gap:3px;padding:4px 0}
+.typing i{width:6px;height:6px;border-radius:50%;background:var(--muted);animation:blink 1.2s infinite}
+.typing i:nth-child(2){animation-delay:.2s}.typing i:nth-child(3){animation-delay:.4s}
+@keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
+.empty{color:var(--muted);text-align:center;margin:auto;padding:20px}
+#composer{display:flex;gap:6px;align-items:flex-end;padding:9px 10px;border-top:1px solid var(--line)}
+#input{flex:1;min-width:0;resize:none;border:1px solid var(--line);border-radius:12px;padding:6px 10px;background:var(--panel-2);outline:none}
+#input:focus{border-color:var(--accent)}
+#job-list{list-style:none;margin:0;padding:8px 10px;overflow-y:auto;flex:1}
+#job-list li{border:1px solid var(--line);border-radius:12px;padding:7px 9px;margin-bottom:6px;background:var(--panel)}
+.job-head{display:flex;align-items:center;gap:6px;cursor:pointer}
+.job-title{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pill{font:11px var(--f-mono);border-radius:999px;padding:1px 8px;color:#fff;background:var(--c)}
+.job-meta{color:var(--muted);font-size:11.5px}
+.job-output{margin-top:6px;max-height:190px;overflow:auto;background:var(--panel-2);padding:6px 8px;border-radius:8px}
+.job-actions{display:flex;gap:6px;margin-top:6px}

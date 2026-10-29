@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:">
+<title>Burrowby Works</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">
+      <h1>Burrowby <span>Works</span></h1>
+      <span class="shift" id="shift">opening the factory…</span>
+    </div>
+    <nav class="views" aria-label="Sections">
+      <button type="button" data-view="assistant" aria-current="false">Assistant</button>
+      <button type="button" data-view="factory" aria-current="page">Factory</button>
+      <button type="button" data-view="board" aria-current="false">Board</button>
+      <button type="button" data-view="context" aria-current="false">Context</button>
+    </nav>
+    <div class="controls" id="factoryControls">
+      <span>Jobs at once</span>
+      <div class="seg" role="group" aria-label="Jobs running at once" id="concSeg">
+        <button type="button" data-c="1" aria-pressed="false">1</button>
+        <button type="button" data-c="2" aria-pressed="true">2</button>
+        <button type="button" data-c="3" aria-pressed="false">3</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout" id="view-factory">
+    <div class="left">
+      <form class="assign" id="assign" autocomplete="off">
+        <label for="jobText" class="sr">Job description</label>
+        <textarea id="jobText" rows="2" placeholder="Describe a job for your workers. Ctrl+Enter to assign."></textarea>
+        <div class="assign-row">
+          <label for="jobWorker" class="sr">Worker</label>
+          <select id="jobWorker"></select>
+          <label for="jobTier" class="sr">Model</label>
+          <select id="jobTier">
+            <option value="default">Balanced model</option>
+            <option value="quick">Quick model</option>
+            <option value="complex">Deep-thinking model</option>
+          </select>
+          <label for="jobProject" class="sr">Project context</label>
+          <select id="jobProject" title="Send this project's context with the job"><option value="">No project</option></select>
+          <span class="grow"></span>
+          <span class="mode" id="mode">Connecting…</span>
+          <button class="btn primary" type="submit" id="assignBtn" disabled>Assign job</button>
+        </div>
+        <div class="examples" id="examples"></div>
+      </form>
+      <section class="floor" id="floor" aria-label="Factory floor">
+        <canvas id="world" aria-label="Worker pets at their stations"></canvas>
+      </section>
+    </div>
+
+    <aside class="obs" aria-label="Agent observability">
+      <div class="obs-head"><h2>Control room</h2><span style="flex:1"></span><span class="mode" id="lines"></span><button class="btn small" type="button" id="exportBtn" title="Save all workers, jobs, projects, tasks, context and chat as a JSON file">Export data</button><button class="btn small danger" type="button" id="stopAllBtn" title="Stop every queued and running job">Stop all jobs</button><button class="btn small" type="button" id="settingsBtn" title="Claude Code, models, import">Settings</button></div>
+      <nav class="tabs" role="tablist">
+        <button role="tab" data-tab="overview" aria-selected="true">Overview</button>
+        <button role="tab" data-tab="jobs" aria-selected="false">Jobs<span class="count" id="jobCount"></span></button>
+        <button role="tab" data-tab="workers" aria-selected="false">Workers<span class="count" id="workerCount"></span></button>
+      </nav>
+
+      <div class="panel" id="p-overview"></div>
+
+      <div class="panel" id="p-jobs" hidden>
+        <div class="detail" id="jobDetail" hidden>
+          <div class="dh">
+            <img id="jdAvatar" alt="">
+            <div style="min-width:0"><h4 id="jdTitle"></h4><p id="jdSub"></p></div>
+            <button class="btn small x" type="button" data-act="close-job">Close</button>
+          </div>
+          <div class="stats" id="jdStats"></div>
+          <div class="section"><span class="label">Where the time went</span><div class="spanbar" id="jdBar"></div><div class="legend" id="jdLegend"></div></div>
+          <div class="section"><span class="label">Job</span><p class="prompt" id="jdPrompt"></p></div>
+          <div class="section code-info" id="jdCode" hidden></div>
+          <div class="section"><span class="label">Output</span><div class="output" id="jdOutput"></div></div>
+          <div class="actions" id="jdActions"></div>
+        </div>
+        <div class="assign-row">
+          <div class="examples" id="jobFilters">
+            <button class="chip" type="button" data-f="all" aria-pressed="true">All</button>
+            <button class="chip" type="button" data-f="active" aria-pressed="false">In progress</button>
+            <button class="chip" type="button" data-f="done" aria-pressed="false">Shipped</button>
+            <button class="chip" type="button" data-f="failed" aria-pressed="false">Failed</button>
+          </div>
+          <span class="grow"></span>
+          <button class="btn small" type="button" id="clearBtn">Clear finished</button>
+        </div>
+        <div class="joblist" id="jobList"></div>
+      </div>
+
+      <div class="panel" id="p-workers" hidden>
+        <div class="detail" id="workerDetail" hidden>
+          <div class="dh">
+            <img id="wdAvatar" alt="">
+            <div style="min-width:0"><h4 id="wdTitle"></h4><p id="wdSub"></p></div>
+            <button class="btn small x" type="button" data-act="close-worker">Close</button>
+          </div>
+          <div class="stats" id="wdStats"></div>
+          <form class="form" id="wdForm">
+            <div class="two">
+              <div><label for="wdName">Name</label><input id="wdName" maxlength="20" required></div>
+              <div><label for="wdSpecies">Species</label><select id="wdSpecies"></select></div>
+            </div>
+            <label for="wdCap">Capability</label>
+            <select id="wdCap"><option value="text">Text only: writes answers</option><option value="code">Code: edits project repos in a worktree and opens PRs</option><option value="pm">Project manager: proposes tickets</option></select>
+            <label for="wdSpec">Specialty and instructions</label>
+            <textarea id="wdSpec" maxlength="1200" placeholder="What this worker is good at and how it should work"></textarea>
+            <div class="actions">
+              <button class="btn primary" type="submit">Save worker</button>
+              <button class="btn danger" type="button" id="retireBtn">Retire</button>
+            </div>
+          </form>
+        </div>
+        <div class="assign-row"><span class="label grow">Your crew</span><button class="btn small" type="button" id="hireBtn">Hire a worker</button></div>
+        <div class="tablewrap" id="workerTable"></div>
+      </div>
+    </aside>
+  </main>
+
+  <main class="view boardview" id="view-board" hidden>
+    <aside class="card-panel projects">
+      <h2>Projects</h2>
+      <div id="projList"></div>
+      <button class="btn small" type="button" data-act="new-project">New project</button>
+    </aside>
+    <section class="card-panel board">
+      <div class="emptystate" id="boardEmpty" style="padding:24px">
+        <h3>Plan work for your crew</h3>
+        <p>Make a project, break it into tasks, and send any task to the factory. When a worker finishes, the task moves to Review with the output attached.</p>
+        <div class="actions"><button class="btn primary" type="button" data-act="new-project">New project</button><button class="btn" type="button" data-act="sample-project">Start with a sample project</button></div>
+      </div>
+      <div id="boardMain" hidden style="display:contents">
+        <div class="board-h">
+          <span class="dot" id="bhDot" style="width:12px;height:12px;border-radius:4px"></span>
+          <h2 id="bhName"></h2><span class="key" id="bhKey"></span>
+          <span style="flex:1"></span>
+          <label class="sr" for="boardSearch">Search tasks</label>
+          <input class="search" id="boardSearch" type="search" placeholder="Search tasks">
+          <button class="btn small" type="button" id="suggestBtn">Suggest tasks</button>
+          <button class="btn small" type="button" id="releaseBtn" hidden title="Fast-forward prod to dev. Only you can do this.">Release to prod</button>
+          <button class="btn small" type="button" data-act="edit-project">Edit project</button>
+          <button class="btn primary small" type="button" data-act="new-task">New task</button>
+          <p class="desc"><span id="bhDesc"></span> <span class="key" id="bhCtx"></span></p>
+          <p class="desc repo-note" id="bhRepo" hidden></p>
+        </div>
+        <div class="suggest" id="suggest" hidden></div>
+        <div class="cols" id="cols"></div>
+      </div>
+    </section>
+  </main>
+
+  <main class="view ctxview" id="view-context" hidden>
+    <aside class="card-panel ctx-side">
+      <h2>Context library</h2>
+      <label class="sr" for="ctxSearch">Search context</label>
+      <input class="search" id="ctxSearch" type="search" placeholder="Search titles, tags and text" style="width:100%">
+      <div class="assign-row">
+        <label class="sr" for="ctxKind">Type</label>
+        <select id="ctxKind"></select>
+        <span class="grow"></span>
+        <button class="btn small primary" type="button" data-act="new-ctx">New entry</button>
+        <label class="btn small" for="ctxFile">Import file</label>
+        <input type="file" id="ctxFile" accept=".txt,.md,.markdown,.csv,.json,.html,.xml,.yaml,.yml,text/*" multiple class="sr">
+      </div>
+      <div id="ctxList"></div>
+    </aside>
+    <section class="card-panel ctx-main" id="ctxMain"></section>
+  </main>
+
+  <main class="view asview" id="view-assistant" hidden>
+    <aside class="card-panel as-side">
+      <h2 id="asName">Your foreman</h2>
+      <div class="dock" id="asDock">
+        <canvas id="asPet" width="320" height="240" aria-label="Your foreman."></canvas>
+        <p class="hint" id="dockHint">I also live on your desktop, walking along the taskbar. Click me there to chat.</p>
+      </div>
+      <div class="actions"><button class="btn primary small" type="button" id="roamBtn">Drop me on the taskbar</button></div>
+      <form class="form" id="asSettings">
+        <div class="two">
+          <div><label for="asNameIn">Name</label><input id="asNameIn" maxlength="20"></div>
+          <div><label for="asSpecies">Species</label><select id="asSpecies"></select></div>
+        </div>
+        <label for="asTier">Thinking</label>
+        <select id="asTier"><option value="quick">Quick replies</option><option value="default">Careful planning</option></select>
+        <div class="actions"><button class="btn small" type="submit">Save</button></div>
+      </form>
+      <div class="section"><span class="label">Try asking</span><div class="examples" id="asExamples"></div></div>
+    </aside>
+    <section class="card-panel as-chat">
+      <div class="chat-h"><h2>Chat</h2><span class="mode" id="asMode"></span><span style="flex:1"></span><button class="btn small" type="button" id="chatClear">Clear chat</button></div>
+      <div class="chatlog" id="chatLog" aria-live="polite"></div>
+      <form class="chatbar" id="chatForm">
+        <label class="sr" for="chatInput">Message</label>
+        <textarea id="chatInput" rows="2" placeholder="Ask your foreman to get something done. Enter to send, Shift+Enter for a new line."></textarea>
+        <button class="btn" type="button" id="chatStop" hidden>Stop</button>
+        <button class="btn primary" type="submit" id="chatSend">Send</button>
+      </form>
+    </section>
+  </main>
+</div>
+
+<div id="roamer" hidden><canvas id="roamCv" tabindex="0" aria-label="Foreman pet. Drag to move, click to chat."></canvas></div>
+<div class="roam-say" id="roamSay" hidden></div>
+<div class="roam-chat" id="roamChat" hidden role="dialog" aria-label="Chat with your foreman">
+  <div class="hd"><img id="miniAv" alt=""><span id="miniName"></span><span style="flex:1"></span><button class="btn small" type="button" id="miniOpen">Open chat</button><button class="btn small" type="button" id="miniClose" aria-label="Close">×</button></div>
+  <div class="mini-log" id="miniLog"></div>
+  <form id="miniForm"><label class="sr" for="miniInput">Message</label><input id="miniInput" placeholder="Tell me what to do" autocomplete="off"><button class="btn primary small" type="submit" id="miniSend">Send</button></form>
+</div>
+
+<div class="drawer" id="taskDrawer" hidden role="dialog" aria-labelledby="tdHead">
+  <div class="dh"><div style="min-width:0"><span class="label" id="tdKey"></span><h3 id="tdHead">Task</h3></div><button class="btn small x" type="button" data-act="close">Close</button></div>
+  <form class="form" id="taskForm">
+    <label for="tdTitle">Title</label><input id="tdTitle" maxlength="140" required>
+    <label for="tdDesc">Description</label><textarea id="tdDesc" maxlength="6000" placeholder="What should the worker produce? Add acceptance criteria."></textarea>
+    <div class="two"><div><label for="tdStatus">Status</label><select id="tdStatus"></select></div><div><label for="tdPrio">Priority</label><select id="tdPrio"></select></div></div>
+    <div class="two"><div><label for="tdAssignee">Assignee</label><select id="tdAssignee"></select></div><div><label for="tdDue">Due</label><input id="tdDue" type="date"></div></div>
+    <label for="tdLabels">Labels</label><input id="tdLabels" placeholder="Comma separated, e.g. research, copy">
+    <label>Context <span class="hint" id="tdCtxNote"></span></label><div class="checks" id="tdCtx"></div>
+    <div class="actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" data-act="send">Save and send to factory</button><button class="btn danger" type="button" data-act="delete" id="tdDelete">Delete</button></div>
+  </form>
+  <div class="section" id="tdRuns"></div>
+</div>
+
+<div class="drawer" id="projDrawer" hidden role="dialog" aria-labelledby="pdHead">
+  <div class="dh"><h3 id="pdHead">Project</h3><button class="btn small x" type="button" data-act="close">Close</button></div>
+  <form class="form" id="projForm">
+    <div class="two"><div><label for="pdName">Name</label><input id="pdName" maxlength="60" required></div><div><label for="pdKey">Key</label><input id="pdKey" maxlength="5" placeholder="e.g. WEB"></div></div>
+    <label>Color</label><div class="swatches" id="pdColor"></div>
+    <label for="pdDesc">Description</label><textarea id="pdDesc" maxlength="2000" placeholder="Goal, audience, constraints. Used when suggesting tasks."></textarea>
+    <label>Project context <span class="hint">sent with every task in this project</span></label><div class="checks" id="pdCtx"></div>
+    <label for="pdRepo">Repository <span class="hint">GitHub URL or local folder; the app keeps its own clone</span></label>
+    <div class="assign-row"><input id="pdRepo" class="grow" placeholder="https://github.com/you/repo or C:\path\to\repo" spellcheck="false"><button class="btn small" type="button" data-act="set-repo" id="pdRepoBtn">Connect</button></div>
+    <p class="hint repo-note" id="pdRepoNote"></p>
+    <div class="actions"><button class="btn primary" type="submit">Save project</button><button class="btn danger" type="button" data-act="delete" id="pdDelete">Delete project</button></div>
+  </form>
+</div>
+<div class="toast" id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

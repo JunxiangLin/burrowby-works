@@ -1,0 +1,45 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:" />
+    <title>Burrowby Works pet</title>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;700;800&family=Figtree:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" />
+    <link rel="stylesheet" href="pet.css" />
+  </head>
+  <body>
+    <canvas id="pet" width="84" height="84" aria-label="Foreman pet. Drag to move, click to chat, right-click for the menu."></canvas>
+
+    <div id="bubble" hidden></div>
+
+    <section id="popover" hidden role="dialog" aria-label="Chat with your foreman">
+      <header>
+        <img id="pop-av" alt="" />
+        <span id="pet-name">Marmalade</span>
+        <nav>
+          <button class="tab" data-tab="chat" aria-pressed="true">Chat</button>
+          <button class="tab" data-tab="jobs" aria-pressed="false">Jobs <span id="jobs-badge" hidden></span></button>
+        </nav>
+        <span class="grow"></span>
+        <button id="btn-app" class="btn small" title="Open Burrowby Works">Open app</button>
+        <button id="btn-close" class="btn small" title="Close (Esc)" aria-label="Close">×</button>
+      </header>
+
+      <div id="view-chat" class="view">
+        <div id="messages"></div>
+        <form id="composer">
+          <textarea id="input" rows="2" placeholder="Tell me what to do. Enter to send."></textarea>
+          <button type="button" class="btn small" id="btn-stop" hidden>Stop</button>
+          <button type="submit" class="btn primary small" id="btn-send">Send</button>
+        </form>
+      </div>
+
+      <div id="view-jobs" class="view" hidden>
+        <ul id="job-list"></ul>
+      </div>
+    </section>
+
+    <script src="pets.js"></script>
+    <script src="pet.js"></script>
+  </body>
+</html>
