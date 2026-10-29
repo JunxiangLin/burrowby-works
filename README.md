@@ -60,9 +60,9 @@ ported from the artifact's source. The section switcher stays centered whichever
     a stacked queued/thinking/writing chart, 5-minute throughput and worker utilization.
   - **Jobs:** a time breakdown for each job, with live streaming output, copy, stop, run again and delete.
   - **Workers:** edit a worker's name, species and specialty, hire or retire workers, and set 1, 2 or 3 jobs at once.
-- **Board.** Projects have a name, key, color, description and project context. Tasks live in Backlog, To do, In progress, Review and
+- **Board.** Projects have a name, key, color, description and project context. Tasks live in Backlog, To do, In progress, Testing, Review and
   Done columns, with drag and drop between them. The task drawer has title, description, status, priority, assignee, due date, labels, task context, run history and latest output.
-  **Save and send to factory** moves the task to In progress, and to Review when the job ships. **Suggest tasks** asks Claude
+  **Save and send to factory** moves the task to In progress, and to Review when the job ships (a coder's PR goes through Testing first, see [QA stage](#qa-stage)). **Suggest tasks** asks Claude
   for ideas. **Start with a sample project** sets up a demo.
 - **Context.** Entries have a title, type, tags and up to 80,000 characters of content. You can import text files and attach entries to projects or
   tasks. A meter shows each entry's share of the 60,000-character per-job context budget. Attached entries go into the job prompt
@@ -84,6 +84,7 @@ Every worker has a **capability**, set in Control room → Workers or by asking 
 | --- | --- |
 | **Text only** | Writes an answer, as in the artifact. |
 | **Code** | For a task or job in a project that has a repository, edits the repo in its own git worktree, commits, and the app opens a PR into `dev`. Otherwise writes text. |
+| **QA** | Tests a coder's branch before Review (see [QA stage](#qa-stage)). Workers whose specialty starts with "QA" or "Tester" get it by default. |
 | **Project manager** | Writes notes and proposed tickets. The job detail lists them with checkboxes and an **Add selected to Backlog** button. The foreman can accept them too. |
 
 Workers whose specialty starts with "Coder" are code-capable by default.
@@ -116,7 +117,7 @@ The Board header then shows which folder workers can edit, and a **Release to pr
 3. The worker is told to commit with a message that starts with the task key. If it leaves changes uncommitted, the app commits them.
    If nothing changed, the job fails with `no_changes`.
 4. **The app**, not the agent, pushes the branch and runs `gh pr create --base dev`. The worktree is then removed; the branch stays.
-5. The task moves to **Review**. The task drawer and the job detail show:
+5. The task moves to **Testing** (see [QA stage](#qa-stage)); after QA passes it moves to **Review**. The task drawer and the job detail show:
    - the branch, with a PR link
    - the files changed, with + and − lines
    - every step the worker took
@@ -124,6 +125,18 @@ The Board header then shows which folder workers can edit, and a **Release to pr
 Merging: ask the foreman ("merge PR 3"), or merge on GitHub. The foreman's `merge_pr` refuses any PR that doesn't target `dev`.
 Releasing: only the **Release to prod** button on the Board does it, after a confirmation. It fast-forwards `prod` to `dev` on the
 remote, and refuses if `prod` has commits that `dev` doesn't.
+
+### QA stage
+
+The board has a **Testing** column between In progress and Review. It applies to every coder job that ends in a pushed branch and PR, whether it came from a board task or a direct job tied to a task.
+
+1. When the coder's PR opens, the task moves to **Testing** and a QA worker is assigned automatically, with no manual step. The app picks a worker with the QA capability; if there is none, a coder other than the author; if there is only one coder, that coder.
+2. QA runs in a worktree on the coder's branch with the same tool allowlist. It reads the diff, runs the existing tests, adds tests where they are missing (committed to the same branch, so the PR picks them up), and checks the task's acceptance criteria. It ends with a line `VERDICT: PASS` or `VERDICT: FAIL`.
+3. **Pass:** the task moves to **Review** with the QA notes attached.
+4. **Fail:** the task moves back to **In progress**, assigned to the original coder, with the QA notes. A reply with no clear verdict counts as a fail. Sending the task to the factory again puts the QA notes in the coder's prompt. That step is manual, so a failing task cannot loop forever.
+5. If QA itself breaks (for example the run errors out), the task moves to Review and the notes say it was not verified.
+
+The task drawer shows the QA notes, and the QA run appears in its run history.
 
 ### Safety rails
 

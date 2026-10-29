@@ -16,16 +16,16 @@ const DEFAULT_WORKERS = [
   { id: 'w_juniper', name: 'Juniper', species: 'cat', specialty: 'Writer. Drafts emails, posts and docs in a warm, plain voice. Keeps things short.' },
   { id: 'w_clover', name: 'Clover', species: 'frog', specialty: 'Analyst. Breaks problems into steps, makes rough estimates, and ends with a clear recommendation.' },
 ];
-const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['review', 'Review'], ['done', 'Done']];
+const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];
 const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
-  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals'];
+  'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'qaFor'];
 const READ_TOOLS = new Set(['get_factory_status', 'get_job', 'list_projects', 'list_tasks', 'search_context', 'list_prs']);
-const CAPABILITIES = ['text', 'code', 'pm'];
+const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 
 // Coding jobs: the only tools a worker agent gets, and the shell commands it may run.
 // Everything else is denied without asking (--permission-mode dontAsk).
@@ -56,8 +56,20 @@ function workerEnv() {
   return env;
 }
 
-function codeSystemPrompt(w, ref, wt) {
-  return `You are ${w.name}, a coding worker pet at Burrowby Works. ${w.specialty || ''}
+const QA_RULES = `
+
+You are acting as QA for another coder's work, on that coder's branch. Read the diff against dev, run the existing tests, add tests where they are missing (and commit them), and check each acceptance criterion in the task. Do not rewrite the feature itself; report problems instead.
+End your reply with notes for the task (what you checked, what passed, what failed and why), then a final line that is exactly "VERDICT: PASS" or "VERDICT: FAIL". Fail if tests fail, or an acceptance criterion is not met.`;
+
+// QA's verdict is the last "VERDICT: PASS|FAIL" line of its reply; null when absent.
+function parseVerdict(text) {
+  const m = [...String(text || '').matchAll(/VERDICT:\s*\**\s*(PASS|FAIL)\b/gi)];
+  return m.length ? m[m.length - 1][1].toLowerCase() : null;
+}
+const qaNotes = (text) => String(text || '').replace(/^.*VERDICT:.*$/gim, '').trim().slice(0, 8000);
+
+function codeSystemPrompt(w, ref, wt, qa = false) {
+  return `You are ${w.name}, a coding worker pet at Burrowby Works. ${w.specialty || ''}${qa ? QA_RULES : ''}
 
 You are working on ${ref} in a git worktree on branch ${wt.branch}. The current directory is that worktree.
 Rules:
@@ -111,7 +123,7 @@ function readJson(file) {
 // ---------- normalisers (shared by load and import) ----------
 const normWorker = (w) => ({
   id: String(w.id), name: String(w.name).slice(0, 20), species: SPECIES.includes(w.species) ? w.species : 'bunny', specialty: String(w.specialty || '').slice(0, 1200),
-  capability: CAPABILITIES.includes(w.capability) ? w.capability : /^\s*coder\b/i.test(w.specialty || '') ? 'code' : 'text',
+  capability: CAPABILITIES.includes(w.capability) ? w.capability : /^\s*coder\b/i.test(w.specialty || '') ? 'code' : /^\s*(qa|tester)\b/i.test(w.specialty || '') ? 'qa' : 'text',
 });
 const normForeman = (f) => ({ name: String((f && f.name) || 'Marmalade').slice(0, 20), species: f && SPECIES.includes(f.species) ? f.species : 'cat', tier: f && f.tier === 'default' ? 'default' : 'quick' });
 function normJob(j) {
@@ -127,7 +139,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: t.qa && ['pass', 'fail', 'error'].includes(t.qa.verdict) ? { verdict: t.qa.verdict, notes: String(t.qa.notes || '').slice(0, 8000), by: String(t.qa.by || ''), jobId: t.qa.jobId || '', at: t.qa.at || 0 } : null, order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -317,13 +329,14 @@ class Engine extends EventEmitter {
 
   jobKind(j, w) {
     if (w.capability === 'pm') return 'pm';
+    if (j.qaFor && ['code', 'qa'].includes(w.capability) && this.repoReady(this.projectById(j.projectId))) return 'qa';
     if (w.capability === 'code' && this.repoReady(this.projectById(j.projectId))) return 'code';
     return 'text';
   }
 
   async runJob(j, w) {
     const kind = this.jobKind(j, w);
-    if (kind === 'code') return this.runCodeJob(j, w);
+    if (kind === 'code' || kind === 'qa') return this.runCodeJob(j, w);
     j.kind = kind;
     const prompt = this.buildPrompt(j, w) + (kind === 'pm' ? PM_INSTRUCTIONS : '');
     Object.assign(j, { status: 'running', workerId: w.id, startedAt: Date.now(), output: '', inTok: tok(prompt), tierApplied: j.tier, model: this.claude.modelFor(j.tier) });
@@ -375,14 +388,70 @@ class Engine extends EventEmitter {
 
   onJobFinished(j) {
     const t = j.taskId && this.taskById(j.taskId);
-    if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
-      Object.assign(t, { status: 'review', order: Date.now(), updatedAt: Date.now() });
-      this.changed('tasks');
-      this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
+    if (t && j.qaFor) this.finishQa(j, t);
+    else if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
+      const qaw = j.kind === 'code' && j.branch ? this.pickQaWorker(j) : null;
+      if (qaw) {
+        // A coder's work goes to Testing first; QA starts by itself.
+        Object.assign(t, { status: 'testing', order: Date.now(), updatedAt: Date.now() });
+        this.changed('tasks');
+        this.emit('notice', { kind: 'task-testing', text: `${this.taskKey(t)} is in Testing with ${qaw.name}.` });
+        this.startQa(j, t, qaw);
+      } else {
+        Object.assign(t, { status: 'review', order: Date.now(), updatedAt: Date.now() });
+        this.changed('tasks');
+        this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
+      }
     }
     const w = this.byWorker(j.workerId);
     if (j.status === 'done') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `${w ? w.name : 'A worker'} finished job #${j.n}.${j.byForeman ? ' Want the summary?' : ''}` });
     else if (j.status === 'failed') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `Job #${j.n} failed (${j.error}).${j.byForeman ? ' Want me to retry it?' : ''}` });
+  }
+
+  // ---------- QA stage ----------
+  // A worker with the QA capability if there is one, else a coder other than the author, else the author.
+  pickQaWorker(j) {
+    if (!this.repoReady(this.projectById(j.projectId))) return null;
+    const busy = (w) => this.jobs.filter((x) => this.isActive(x) && x.workerId === w.id).length;
+    const by = (a, b) => busy(a) - busy(b);
+    const qa = this.workers.filter((w) => w.capability === 'qa').sort(by);
+    if (qa.length) return qa[0];
+    const coders = this.workers.filter((w) => w.capability === 'code');
+    return coders.filter((w) => w.id !== j.workerId).sort(by)[0] || coders.find((w) => w.id === j.workerId) || null;
+  }
+
+  startQa(j, t, w) {
+    const files = ((j.diff && j.diff.files) || []).map((f) => `- ${f.file} (+${f.add} -${f.del})`).join('\n') || '(none)';
+    const text = `QA for ${this.taskKey(t)}: ${t.title}\n\nThe coder's branch is ${j.branch}${j.pr ? ` (PR ${j.pr.url})` : ''}. It changes:\n${files}\n\nTask description and acceptance criteria:\n${t.desc || t.title}\n\nCoder's summary:\n${(j.output || '').slice(0, 2000)}`;
+    const qj = this.createJob(text, w.id, 'default', { ctx: j.ctx, taskId: t.id, projectId: t.projectId, qaFor: j.id });
+    t.jobs = [...(t.jobs || []), qj.id];
+    this.changed('tasks');
+    return qj;
+  }
+
+  // Pass -> Review; fail -> back to In progress for the original coder; QA could not run -> Review, flagged.
+  finishQa(j, t) {
+    if (j.status === 'cancelled' || t.status !== 'testing') return;
+    const orig = this.jobById(j.qaFor);
+    const w = this.byWorker(j.workerId);
+    let verdict, notes;
+    if (j.status !== 'done') {
+      verdict = 'error';
+      notes = `QA could not finish (${j.error || j.status}). The work has not been verified; please check it by hand.`;
+    } else {
+      verdict = parseVerdict(j.output);
+      notes = qaNotes(j.output) || '(QA left no notes.)';
+      if (!verdict) { verdict = 'fail'; notes += '\n\nQA gave no clear PASS or FAIL verdict, so this counts as a fail.'; }
+    }
+    const now = Date.now();
+    t.qa = { verdict, notes, by: w ? w.name : 'QA', jobId: j.id, at: now };
+    t.status = verdict === 'fail' ? 'progress' : 'review';
+    if (verdict === 'fail' && orig && orig.workerId && this.byWorker(orig.workerId)) t.assignee = orig.workerId;
+    Object.assign(t, { order: now, updatedAt: now });
+    this.changed('tasks');
+    const key = this.taskKey(t);
+    if (verdict === 'fail') this.emit('notice', { kind: 'task-qa', text: `${key} failed QA and is back In progress. See the QA notes.` });
+    else this.emit('notice', { kind: 'task-review', text: verdict === 'pass' ? `${key} passed QA and is ready for review.` : `${key} is in Review, but QA could not verify it.` });
   }
 
   stopJob(id) {
@@ -407,16 +476,19 @@ class Engine extends EventEmitter {
     const t = j.taskId ? this.taskById(j.taskId) : null;
     const key = p.key;
     const ref = t ? `${key}-${t.n}` : `${key} job #${j.n}`;
-    Object.assign(j, { kind: 'code', status: 'running', workerId: w.id, startedAt: Date.now(), output: '', steps: [], tierApplied: j.tier, model: this.claude.modelFor(j.tier), pr: null, prError: null, diff: null });
+    const qa = !!j.qaFor;
+    const orig = qa ? this.jobById(j.qaFor) : null;
+    Object.assign(j, { kind: qa ? 'qa' : 'code', status: 'running', workerId: w.id, startedAt: Date.now(), output: '', steps: [], tierApplied: j.tier, model: this.claude.modelFor(j.tier), pr: null, prError: null, diff: null });
     this.jobChanged(j);
     const ctl = new AbortController();
     this.controllers.set(j.id, ctl);
     const step = (label) => { j.steps = [...(j.steps || []), redact(label)].slice(-200); this.jobChanged(j, { persist: false }); };
     let wt = null;
     try {
-      wt = await this.repos.createWorktree(key, t ? t.n : `job${j.n}`, t ? t.title : j.text.split('\n')[0]);
+      if (qa && !(orig && orig.branch)) throw Object.assign(new Error('The coder branch to test is gone.'), { code: 'no_branch' });
+      wt = qa ? await this.repos.checkoutWorktree(key, orig.branch) : await this.repos.createWorktree(key, t ? t.n : `job${j.n}`, t ? t.title : j.text.split('\n')[0]);
       Object.assign(j, { branch: wt.branch, worktree: wt.dir });
-      step(`Created worktree on ${wt.branch} (from dev)`);
+      step(qa ? `Checked out ${wt.branch} for QA` : `Created worktree on ${wt.branch} (from dev)`);
       if (ctl.signal.aborted) throw Object.assign(new Error('Stopped.'), { code: 'cancelled' });
       const prompt = this.buildCodePrompt(j, w, ref, wt);
       j.inTok = tok(prompt);
@@ -424,7 +496,7 @@ class Engine extends EventEmitter {
       const res = await this.claude.stream({
         exe: this.claude.exe(),
         model: j.model,
-        systemPrompt: codeSystemPrompt(w, ref, wt),
+        systemPrompt: codeSystemPrompt(w, ref, wt, qa),
         prompt,
         cwd: wt.dir,
         signal: ctl.signal,
@@ -446,13 +518,18 @@ class Engine extends EventEmitter {
       const fin = await this.repos.finishWorktree(wt.dir, wt.base, `${ref}: ${t ? t.title : 'factory job'}`);
       if (fin.autoCommitted) step('Committed leftover changes the worker had not committed');
       j.diff = { commits: fin.commits, files: fin.files.slice(0, 100), insertions: fin.insertions, deletions: fin.deletions };
-      if (!fin.commits) {
+      if (!fin.commits && !qa) {
         j.status = 'failed';
         j.error = 'no_changes';
       } else {
-        step(`Pushing ${wt.branch}`);
-        await this.repos.push(key, wt.branch);
-        if (p.repo.github) {
+        // QA may add no tests; when it does they go onto the coder's branch, so the existing PR picks them up.
+        if (fin.commits) {
+          step(`Pushing ${wt.branch}`);
+          await this.repos.push(key, wt.branch);
+        }
+        if (qa) {
+          if (fin.commits) step(`Added ${fin.commits} QA commit(s) to the PR branch`);
+        } else if (p.repo.github) {
           try {
             const body = `${t ? `Task **${ref}**: ${t.title}\n\n${t.desc || ''}` : j.text}\n\n---\nOpened by Burrowby Works for ${w.name} (job #${j.n}). ${fin.files.length} file(s) changed, +${fin.insertions} -${fin.deletions}.`;
             j.pr = await this.repos.openPr(key, wt.branch, `${ref}: ${t ? t.title : j.text.split('\n')[0].slice(0, 70)}`, body);
@@ -481,6 +558,7 @@ class Engine extends EventEmitter {
   }
 
   buildCodePrompt(j, w, ref, wt) {
+    if (j.qaFor) return `${j.text}\n${this.contextBlock(j.ctx)}\nYou are in a git worktree checked out on the coder's branch ${wt.branch}. Test it as described in your instructions. Commit any tests you add with a message that starts with "${ref}:". Finish with your notes and the VERDICT line.`;
     return `Task ${ref}\n\n${j.text}\n${this.contextBlock(j.ctx)}\nYou are in a git worktree of the project on branch ${wt.branch}, cut from dev. Make the change, run the project's tests if it has any, and commit your work with a message that starts with "${ref}:". When you are done, reply with a short summary of what you changed and anything left to do.`;
   }
 
@@ -635,7 +713,8 @@ class Engine extends EventEmitter {
     if (!t) return null;
     const p = this.projectById(t.projectId);
     const ctx = [...new Set([...(p ? p.ctx || [] : []), ...(t.ctx || [])])].filter((id) => this.ctxById(id));
-    const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}`;
+    const qaFix = t.qa && t.qa.verdict === 'fail' ? `\n\nQA failed the previous attempt. Fix these problems:\n${t.qa.notes}` : '';
+    const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}${qaFix}`;
     const j = this.createJob(text, t.assignee && this.byWorker(t.assignee) ? t.assignee : 'any', 'default', { ctx, taskId: t.id, projectId: t.projectId, ...extra });
     Object.assign(t, { jobs: [...(t.jobs || []), j.id], status: 'progress', order: Date.now() });
     this.upsert('tasks', t);
@@ -1006,7 +1085,7 @@ const TOOL_SPECS = [
   { name: 'create_project', description: 'Create a project on the board.', input: { name: 'project name', key: '2-5 letter key', description: 'goal, audience, constraints' }, required: ['name'] },
   { name: 'create_task', description: 'Create a task card in a project.', input: { project: 'project key', title: 'short title', description: 'what to produce, with acceptance criteria', priority: Object.keys(PRIO).join(' | '), status: COLS.map((c) => c[0]).join(' | '), assignee: 'worker name' }, required: ['project', 'title'] },
   { name: 'update_task', description: 'Change a task: move columns, re-prioritize, reassign or edit text.', input: { task: 'task key like BLOG-3', title: '', description: '', status: COLS.map((c) => c[0]).join(' | '), priority: Object.keys(PRIO).join(' | '), assignee: 'worker name, or "" for any' }, required: ['task'] },
-  { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then Review when done.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
+  { name: 'send_task_to_factory', description: 'Send a board task to the factory as a job with its project and task context. The task moves to In progress, then Testing (QA) and Review when done.', input: { task: 'task key like BLOG-3' }, required: ['task'] },
   { name: 'search_context', description: 'Search the context library and return short excerpts.', input: { query: 'words to look for' } },
   { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm"' } },
   { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm"' }, required: ['worker'] },
@@ -1050,4 +1129,4 @@ function parseForemanReply({ structured, text }) {
   };
 }
 
-module.exports = { Engine, SPECIES, TOOL_SPECS, FOREMAN_SCHEMA, parseForemanReply, parseTickets, workerEnv, KINDS, CTX_BUDGET, CODE_ALLOWED, CODE_DENIED };
+module.exports = { Engine, SPECIES, TOOL_SPECS, FOREMAN_SCHEMA, parseForemanReply, parseTickets, workerEnv, parseVerdict, COLS, KINDS, CTX_BUDGET, CODE_ALLOWED, CODE_DENIED };

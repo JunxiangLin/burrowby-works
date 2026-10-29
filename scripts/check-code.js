@@ -7,7 +7,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
-const { Engine, workerEnv, parseTickets } = require('../src/engine');
+const { Engine, workerEnv, parseTickets, parseVerdict, COLS } = require('../src/engine');
 const { Repos, redact } = require('../src/repos');
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -21,6 +21,7 @@ module.exports = async function codeChecks() {
   const g = (cwd, ...args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
   const ident = ['-c', 'user.name=t', '-c', 'user.email=t@t'];
   const until = async (j) => { for (let i = 0; i < 200 && (j.status === 'queued' || j.status === 'running'); i++) await wait(50); };
+  const idle = async () => { for (let i = 0; i < 200 && engine.jobs.some((x) => engine.isActive(x)); i++) await wait(50); await wait(20); };
 
   // An "upstream" repo with one commit on main.
   const seed = path.join(tmp, 'seed');
@@ -49,6 +50,8 @@ module.exports = async function codeChecks() {
   const repos = new Repos({ root, appDir, gh: fakeGh });
 
   const codeRuns = [];
+  const qaRuns = [];
+  let qaReplies = []; // QA replies, in order; the default is a pass
   let foremanScript = [];
   const claude = {
     exe: () => 'claude.exe',
@@ -60,6 +63,17 @@ module.exports = async function codeChecks() {
     },
     async stream(opts) {
       if (!opts.code) return { text: 'Notes.\n```json\n{"tickets":[{"title":"Add login","description":"Users can sign in.","priority":"high"},{"title":"Add logout","description":"Users can sign out.","priority":"low"}]}\n```', stopReason: 'end_turn', inTok: 10, outTok: 10 };
+      if (/acting as QA/.test(opts.systemPrompt)) {
+        qaRuns.push(opts);
+        const reply = qaReplies.shift() || 'Ran the tests, all green.\nVERDICT: PASS';
+        if (qaRuns.length === 1) { // the first QA adds a missing test on the coder branch
+          fs.writeFileSync(path.join(opts.cwd, 'hire.test.js'), "require('./hire');\n");
+          g(opts.cwd, 'add', '-A');
+          g(opts.cwd, ...ident, 'commit', '-q', '-m', 'DEMO-1: add test for hire.js');
+        }
+        opts.onText(reply);
+        return { text: reply, stopReason: 'end_turn', inTok: 5, outTok: 5 };
+      }
       codeRuns.push(opts);
       const mode = codeRuns.length; // 1: commits itself, 2: leaves changes uncommitted, 3: changes nothing
       opts.code.onStep('Read README.md');
@@ -110,19 +124,68 @@ module.exports = async function codeChecks() {
   assert.strictEqual(j1.diff.files[0].file, 'hire.js');
   assert.strictEqual(j1.diff.insertions, 1);
   assert.ok(j1.steps.some((x) => x.startsWith('Created worktree')) && j1.steps.some((x) => x.startsWith('Opened PR #1')));
-  assert.strictEqual(engine.taskById(t1.id).status, 'review');
   assert.ok(!fs.existsSync(codeRuns[0].cwd), 'worktree removed after the push');
+
+  // QA stage: the PR moved the task to Testing and QA started with no manual step.
+  assert.deepStrictEqual(COLS.map((c) => c[0]), ['backlog', 'todo', 'progress', 'testing', 'review', 'done'], 'Testing sits between In progress and Review');
+  assert.strictEqual(engine.taskById(t1.id).status, 'testing');
+  const q1 = engine.jobs.find((x) => x.qaFor === j1.id);
+  assert.ok(q1, 'a QA job was queued for the coder job');
+  assert.ok(engine.taskById(t1.id).jobs.includes(q1.id));
+  await until(q1);
+  await idle();
+  assert.strictEqual(q1.status, 'done', q1.errorDetail);
+  assert.strictEqual(q1.kind, 'qa');
+  assert.strictEqual(q1.branch, j1.branch, 'QA works on the coder branch');
+  assert.match(qaRuns[0].systemPrompt, /VERDICT: PASS/);
+  assert.ok(qaRuns[0].cwd.startsWith(path.join(root, 'worktrees', 'DEMO')) && !fs.existsSync(qaRuns[0].cwd), 'QA worktree removed afterwards');
+  assert.match(qaRuns[0].prompt, /hire.js/, 'QA is told what the diff touches');
+  // Pass: Review, with QA notes (without the verdict line).
+  assert.strictEqual(engine.taskById(t1.id).status, 'review');
+  assert.strictEqual(engine.taskById(t1.id).qa.verdict, 'pass');
+  assert.match(engine.taskById(t1.id).qa.notes, /all green/);
+  assert.ok(!/VERDICT/.test(engine.taskById(t1.id).qa.notes));
+  assert.match(g(origin, 'ls-tree', '-r', '--name-only', j1.branch), /hire\.test\.js/, 'tests QA added are pushed to the PR branch');
+  assert.strictEqual(ghCalls.filter((a) => a[1] === 'create').length, 1, 'QA does not open a second PR');
+  assert.strictEqual(parseVerdict('x\nVERDICT: FAIL\nVERDICT: **PASS**'), 'pass');
+  assert.strictEqual(parseVerdict('no verdict'), null);
   assert.strictEqual(g(origin, 'rev-parse', 'dev'), g(origin, 'rev-parse', 'prod'), 'agents never touch dev');
 
   // 2. Uncommitted work is committed by the app; 3. no changes -> failed, no PR.
-  const j2 = engine.sendTask(engine.makeTask(engine.projectById(p.id), { title: 'Second', assignee: 'w_biscuit' }).id);
+  // QA fails this one: back to In progress for the original coder, with the notes.
+  qaReplies = ['The login button does nothing.\nVERDICT: FAIL'];
+  const t2 = engine.makeTask(engine.projectById(p.id), { title: 'Second', assignee: 'w_biscuit' });
+  const j2 = engine.sendTask(t2.id);
   await until(j2);
   assert.strictEqual(j2.status, 'done');
   assert.ok(j2.steps.some((x) => /leftover/.test(x)));
-  const j3 = engine.sendTask(engine.makeTask(engine.projectById(p.id), { title: 'Third', assignee: 'w_biscuit' }).id);
+  assert.strictEqual(engine.taskById(t2.id).status, 'testing');
+  await idle();
+  assert.strictEqual(engine.taskById(t2.id).status, 'progress');
+  assert.strictEqual(engine.taskById(t2.id).qa.verdict, 'fail');
+  assert.match(engine.taskById(t2.id).qa.notes, /does nothing/);
+  assert.strictEqual(engine.taskById(t2.id).assignee, 'w_biscuit');
+  // Sending it back to the coder includes the QA notes; with no new changes the job fails.
+  const j3 = engine.sendTask(t2.id);
+  assert.match(j3.text, /QA failed the previous attempt[\s\S]*does nothing/);
   await until(j3);
   assert.strictEqual(j3.status, 'failed');
   assert.strictEqual(j3.error, 'no_changes');
+  await idle();
+  assert.strictEqual(engine.taskById(t2.id).status, 'progress', 'a failed coder job does not trigger QA');
+
+  // QA edge cases: no verdict counts as a fail; QA failing to run sends the task to Review, flagged.
+  const t5 = engine.makeTask(engine.projectById(p.id), { title: 'Edge', status: 'testing' });
+  engine.finishQa({ id: 'jq', status: 'done', output: 'Looked fine?', qaFor: j1.id, workerId: 'w_biscuit' }, t5);
+  assert.strictEqual(t5.status, 'progress');
+  assert.match(t5.qa.notes, /no clear PASS or FAIL/);
+  t5.status = 'testing';
+  engine.finishQa({ id: 'jq2', status: 'failed', error: 'upstream_error', qaFor: j1.id, workerId: 'w_biscuit' }, t5);
+  assert.strictEqual(t5.status, 'review');
+  assert.strictEqual(t5.qa.verdict, 'error');
+  assert.match(t5.qa.notes, /not been verified/);
+  engine.finishQa({ id: 'jq3', status: 'done', output: 'VERDICT: FAIL', qaFor: j1.id }, t5);
+  assert.strictEqual(t5.status, 'review', 'QA does not move a task that is not in Testing');
 
   // A text worker on the same project still writes text.
   const jt = engine.createJob('Explain the repo', 'w_mochi', 'default', { projectId: p.id });
@@ -134,7 +197,7 @@ module.exports = async function codeChecks() {
   await assert.rejects(engine.mergePr('DEMO', 99), /Only PRs into dev/);
   g(origin, 'branch', '-f', 'dev', j1.branch); // stand-in for GitHub merging the PR
   const rel = await engine.releaseToProd('DEMO');
-  assert.ok(rel.released && rel.commits === 1);
+  assert.ok(rel.released && rel.commits === 2, 'the coder commit and the QA test commit');
   assert.strictEqual(g(origin, 'rev-parse', 'prod'), g(origin, 'rev-parse', 'dev'));
 
   // Safety: no worktrees overlapping the folder the app runs from, or outside the Burrowby root.

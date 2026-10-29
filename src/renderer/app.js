@@ -580,7 +580,7 @@ function renderJobs() {
       <img src="${avatar(w ? w.species : 'chick')}" alt="">
       <span class="txt">#${j.n} ${esc(j.text)}</span>
       <span class="pill" style="--c:${sc}">${sl}</span>
-      <span class="meta">${j.taskId && taskById(j.taskId) ? `<span>${esc(taskKey(taskById(j.taskId)))}</span>` : ''}${j.ctx && j.ctx.length ? `<span>${j.ctx.length} ctx</span>` : ''}<span>${w ? esc(w.name) : 'any worker'}</span><span>${dur}</span><span>≈${fmtNum(j.outTok || 0)} tok</span><span>${TIER_LABEL[j.tierApplied || j.tier] || ''}</span>${j.kind === 'code' ? '<span>code</span>' : j.kind === 'pm' ? '<span>pm</span>' : ''}${j.pr ? `<span>PR #${j.pr.number}</span>` : ''}${j.simulated ? '<span>simulated</span>' : ''}<span>${ago(j.createdAt)}</span></span>
+      <span class="meta">${j.taskId && taskById(j.taskId) ? `<span>${esc(taskKey(taskById(j.taskId)))}</span>` : ''}${j.ctx && j.ctx.length ? `<span>${j.ctx.length} ctx</span>` : ''}<span>${w ? esc(w.name) : 'any worker'}</span><span>${dur}</span><span>≈${fmtNum(j.outTok || 0)} tok</span><span>${TIER_LABEL[j.tierApplied || j.tier] || ''}</span>${j.kind === 'code' ? '<span>code</span>' : j.kind === 'qa' ? '<span>QA</span>' : j.kind === 'pm' ? '<span>pm</span>' : ''}${j.pr ? `<span>PR #${j.pr.number}</span>` : ''}${j.simulated ? '<span>simulated</span>' : ''}<span>${ago(j.createdAt)}</span></span>
     </div>`;
   }).join('') : `<div class="empty">${jobs.length ? 'No jobs match this filter.' : 'No jobs yet. Describe one above and press Assign job.'}</div>`;
   paintJobDetail();
@@ -617,7 +617,7 @@ function paintOutput() {
   paintedOut = { id: j.id, len, status: j.status };
 }
 // Coding jobs: branch, PR, files changed and live tool steps; PM jobs: proposed tickets.
-const CAP_LABEL = { text: 'text', code: 'code', pm: 'PM' };
+const CAP_LABEL = { text: 'text', code: 'code', pm: 'PM', qa: 'QA' };
 function diffHTML(d) {
   if (!d) return '';
   return `<span>${d.files.length} file${d.files.length === 1 ? '' : 's'} changed, <b style="color:var(--ok)">+${d.insertions}</b> <b style="color:var(--crit)">−${d.deletions}</b>, ${d.commits} commit${d.commits === 1 ? '' : 's'}</span>`;
@@ -630,12 +630,12 @@ function prHTML(j) {
 let paintedCode = '';
 function paintCode(j) {
   const box = $('jdCode');
-  if (!j || (j.kind !== 'code' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }
+  if (!j || (j.kind !== 'code' && j.kind !== 'qa' && !(j.proposals && j.proposals.length))) { box.hidden = true; paintedCode = ''; return; }
   const sig = j.id + j.status + (j.steps || []).length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + JSON.stringify((j.proposals || []).map(x => x.accepted)) + (j.diff ? j.diff.insertions + '/' + j.diff.deletions : '');
   if (sig === paintedCode) return; paintedCode = sig;
   box.hidden = false;
   let h = '';
-  if (j.kind === 'code') {
+  if (j.kind === 'code' || j.kind === 'qa') {
     h += `<span class="label">Code</span><div class="legend"><span>${esc(j.branch || 'preparing a branch…')}</span>${diffHTML(j.diff)}</div>`;
     if (prHTML(j)) h += `<p style="margin:6px 0">${prHTML(j)}</p>`;
     if (j.diff && j.diff.files.length) h += `<ul class="files">${j.diff.files.map(f => `<li>${esc(f.file)} <b>+${f.add}</b> <i>−${f.del}</i></li>`).join('')}</ul>`;
@@ -832,7 +832,7 @@ canvas.addEventListener('click', e => {
 });
 
 // ---------- projects, board, context library ----------
-const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['review', 'Review'], ['done', 'Done']];
+const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];
 const PRIO = { low: ['Low', 'var(--s-wait)'], med: ['Medium', 'var(--s-walk)'], high: ['High', 'var(--warn)'], urgent: ['Urgent', 'var(--crit)'] };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
@@ -1008,10 +1008,11 @@ function paintTaskRuns(force) {
   const t = editingTask; if (!t) return;
   if (taskIsNew) { $('tdRuns').innerHTML = ''; runsSig = ''; return; }
   const js = (t.jobs || []).map(jobById).filter(Boolean).reverse();
-  const sig = js.map(j => j.id + j.status + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + (j.steps || []).length).join('|');
+  const sig = js.map(j => j.id + j.status + (j.output || '').length + (j.pr ? j.pr.url + j.pr.merged : '') + (j.prError || '') + (j.steps || []).length).join('|') + (t.qa ? t.qa.verdict + t.qa.at : '');
   if (!force && sig === runsSig) return; runsSig = sig;
   const latest = js.find(j => j.output);
-  $('tdRuns').innerHTML = js.length ? `<span class="label">Factory runs</span><div class="joblist">${js.map(j => { const [sl, sc] = STATUS[j.status]; const w = byWorker(j.workerId || j.pref); return `<div class="job" data-job="${j.id}" role="button" tabindex="0"><img src="${avatar(w ? w.species : 'chick')}" alt=""><span class="txt">Job #${j.n} · ${w ? esc(w.name) : 'any worker'}</span><span class="pill" style="--c:${sc}">${sl}</span><span class="meta"><span>${j.startedAt ? fmtDur(runMs(j)) : 'waiting'}</span><span>≈${fmtNum(j.outTok || 0)} tok</span>${j.kind === 'code' && j.steps ? `<span>${j.steps.length} steps</span>` : ''}${j.diff ? `<span>+${j.diff.insertions} −${j.diff.deletions}</span>` : ''}<span>${ago(j.createdAt)}</span></span></div>${j.kind === 'code' ? `<div class="legend" style="margin:2px 0 6px 40px">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}</div>` : ''}`; }).join('')}</div>` +
+  $('tdRuns').innerHTML = js.length ? `<span class="label">Factory runs</span><div class="joblist">${js.map(j => { const [sl, sc] = STATUS[j.status]; const w = byWorker(j.workerId || j.pref); return `<div class="job" data-job="${j.id}" role="button" tabindex="0"><img src="${avatar(w ? w.species : 'chick')}" alt=""><span class="txt">Job #${j.n} · ${w ? esc(w.name) : 'any worker'}</span><span class="pill" style="--c:${sc}">${sl}</span><span class="meta"><span>${j.startedAt ? fmtDur(runMs(j)) : 'waiting'}</span><span>≈${fmtNum(j.outTok || 0)} tok</span>${(j.kind === 'code' || j.kind === 'qa') && j.steps ? `<span>${j.steps.length} steps</span>` : ''}${j.diff ? `<span>+${j.diff.insertions} −${j.diff.deletions}</span>` : ''}<span>${ago(j.createdAt)}</span></span></div>${j.kind === 'code' || j.kind === 'qa' ? `<div class="legend" style="margin:2px 0 6px 40px">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}</div>` : ''}`; }).join('')}</div>` +
+    (t.qa ? `<span class="label">QA notes · ${{ pass: 'passed', fail: 'failed', error: 'could not verify' }[t.qa.verdict]} · ${esc(t.qa.by)}</span><div class="output">${md(t.qa.notes)}</div>` : '') +
     (latest ? `<span class="label">Latest output · job #${latest.n}</span><div class="output">${md(latest.output)}</div>` : '') : '<div class="empty">Not sent to the factory yet.</div>';
 }
 function saveTaskForm() {
@@ -1470,7 +1471,7 @@ function applyCli(st) {
 }
 api.onPatch(applyPatch);
 api.onReset(s => { selJob = null; selWorker = null; editingTask = null; $('taskDrawer').hidden = true; $('projDrawer').hidden = true; loadSnapshot(s); renderDash(); setView(view); paintChatNow(); });
-api.onNotice(n => { if (n.kind === 'task-review') toast(n.text); });
+api.onNotice(n => { if (['task-review', 'task-testing', 'task-qa'].includes(n.kind)) toast(n.text); });
 api.onCliStatus(applyCli);
 api.onShowView(v => setView(v));
 (async () => {
