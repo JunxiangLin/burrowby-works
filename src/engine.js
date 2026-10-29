@@ -126,7 +126,7 @@ function normJob(j) {
   return o;
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
-const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo) });
+const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), autoSend: typeof p.autoSend === 'boolean' ? p.autoSend : null });
 const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
@@ -161,6 +161,7 @@ class Engine extends EventEmitter {
     this.workers = Array.isArray(f.workers) && f.workers.length ? f.workers.filter((w) => w && w.id && w.name).map(normWorker) : DEFAULT_WORKERS.map(normWorker);
     this.concurrency = [1, 2, 3].includes(f.concurrency) ? f.concurrency : 2;
     this.foreman = normForeman(f.foreman);
+    this.autoSend = f.autoSend === true; // global default for auto-sending Todo tasks; off unless turned on
     const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
     this.jobs = (d.jobs || []).filter((j) => j && j.id && j.text).map(normJob).sort(byCreated);
     this.projects = (d.projects || []).filter((p) => p && p.id && p.name).map(normProject).sort(byCreated);
@@ -171,7 +172,7 @@ class Engine extends EventEmitter {
   }
 
   factoryDoc() {
-    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman } };
+    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman }, autoSend: this.autoSend };
   }
 
   exportDoc() {
@@ -566,6 +567,7 @@ class Engine extends EventEmitter {
     if (Array.isArray(f.workers) && f.workers.length) this.workers = f.workers.filter((w) => w && w.id && w.name).slice(0, MAX_WORKERS).map(normWorker);
     if ([1, 2, 3].includes(f.concurrency)) this.concurrency = f.concurrency;
     if (f.foreman) this.foreman = normForeman(f.foreman);
+    if (typeof f.autoSend === 'boolean') this.autoSend = f.autoSend;
     this.changed('factory');
     this.schedule();
     return this.factoryDoc();
@@ -611,11 +613,35 @@ class Engine extends EventEmitter {
     const list = this[coll];
     const i = list.findIndex((x) => x.id === o.id);
     // Repo settings change only through setProjectRepo, never through a plain save.
-    if (coll === 'projects') o.repo = i >= 0 ? list[i].repo : null;
+    if (coll === 'projects') {
+      o.repo = i >= 0 ? list[i].repo : null;
+      // A plain save that does not mention auto-send keeps the current setting.
+      if (i >= 0 && typeof obj.autoSend !== 'boolean' && obj.autoSend !== null) o.autoSend = list[i].autoSend;
+    }
+    const enteredTodo = coll === 'tasks' && o.status === 'todo' && (i < 0 || list[i].status !== 'todo');
     if (i >= 0) list[i] = o;
     else list.push(o);
     this.changed(coll);
+    if (enteredTodo) this.autoSendTask(o);
     return o;
+  }
+
+  // Auto-send is per project (true/false) or, when the project says nothing (null), the global setting.
+  autoSendOn(p) { return !!p && (typeof p.autoSend === 'boolean' ? p.autoSend : this.autoSend); }
+  setProjectAutoSend(projectRef, value) {
+    const p = this.findProject(projectRef) || this.projectById(projectRef);
+    if (!p) throw new Error('No such project.');
+    p.autoSend = typeof value === 'boolean' ? value : null; // null = follow the global setting
+    this.changed('projects');
+    return p;
+  }
+  // A task entering Todo in a project with a ready repo becomes a job, once. A task
+  // that already has a job is never sent again. Extra jobs wait in the queue.
+  autoSendTask(t) {
+    const p = this.projectById(t.projectId);
+    if (!this.autoSendOn(p) || !this.repoReady(p)) return null;
+    if ((t.jobs || []).length) return null;
+    return this.sendTask(t.id);
   }
   remove(coll, id) {
     if (!['projects', 'tasks', 'contexts'].includes(coll)) return;
