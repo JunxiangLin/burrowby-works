@@ -761,15 +761,22 @@ const maxConc = () => Math.min(12, Math.max(1, workers.length));
 function setConc(n) {
   if (!Number.isInteger(n) || n < 1 || n > maxConc()) {
     toast(`Jobs at once must be a whole number from 1 to ${maxConc()} (you have ${workers.length} hired ${workers.length === 1 ? 'worker' : 'workers'}, max 12).`);
-  } else { concurrency = n; store.saveFactory(); renderDash(); }
+  } else {
+    concurrency = n; renderDash();
+    // Save through the existing factory path and show the value the backend kept (or its error).
+    Promise.resolve(api.setFactory({ concurrency: n })).then(
+      doc => toast(doc && doc.concurrency === n ? `Jobs at once saved: ${n}.` : `Jobs at once is ${doc ? doc.concurrency : 'unchanged'}; ${n} was not saved.`),
+      err => toast(`Could not save jobs at once: ${(err && err.message) || err}`));
+  }
   syncConc();
 }
 function syncConc() {
   if (concurrency > maxConc()) concurrency = maxConc();
-  for (const x of document.querySelectorAll('#concSeg button')) {
-    x.setAttribute('aria-pressed', String(+x.dataset.c === concurrency));
-    x.disabled = +x.dataset.c > maxConc();
-  }
+  // One button per value from 1 up to min(12, hired workers); rebuilt so crew changes are reflected.
+  const seg = $('concSeg');
+  const want = Array.from({ length: maxConc() }, (_, k) => k + 1);
+  if (seg.children.length !== want.length) seg.innerHTML = want.map(v => `<button type="button" data-c="${v}" aria-pressed="false">${v}</button>`).join('');
+  for (const x of seg.querySelectorAll('button')) x.setAttribute('aria-pressed', String(+x.dataset.c === concurrency));
   $('concNum').max = maxConc();
   $('concNum').setAttribute('aria-label', `Jobs at once (1 to ${maxConc()})`);
   $('concNum').value = concurrency;
