@@ -6,6 +6,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const { redact } = require('./repos');
+const { buildSnapshot } = require('./board');
 
 // ---------- constants (from the artifact) ----------
 const SPECIES = ['bunny', 'cat', 'bear', 'frog', 'chick', 'axolotl'];
@@ -852,8 +853,24 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     }
   }
 
+  // Writes a read-only snapshot of the job's project board (outside the worktree) and returns
+  // instructions for querying it. Empty when the job has no project or the write fails.
+  boardAccessBlock(j) {
+    const p = j.projectId && this.projectById(j.projectId);
+    if (!p) return '';
+    try {
+      const snap = buildSnapshot({ project: p, tasks: this.tasks, workerName: (id) => (id && this.byWorker(id) ? this.workerLabel(id) : '') });
+      const dir = path.join(this.dir, 'board');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, `${p.key}.json`);
+      fs.writeFileSync(file, JSON.stringify(snap));
+      const cli = path.join(__dirname, 'board-cli.js');
+      return `\nBoard access (read-only). Git does not hold the board's tickets; read them with:\n  node "${cli}" "${file}" list [--assignee NAME] [--status backlog|todo|progress|testing|review|done] [--priority low|med|high|urgent] [--keyword "words"]\n  node "${cli}" "${file}" get ${p.key}-1\nIt prints JSON (key, title, description, status, priority, assignee). The data is a snapshot from when this job started and cannot be changed from here.\n`;
+    } catch { return ''; }
+  }
+
   buildCodePrompt(j, w, ref, wt) {
-    return `Task ${ref}\n\n${j.text}\n${this.contextBlock(j.ctx)}\nYou are in a git worktree of the project on branch ${wt.branch}, cut from dev. Make the change, run the project's tests if it has any, and commit your work with a message that starts with "${ref}:". When you are done, reply with a short summary of what you changed and anything left to do.`;
+    return `Task ${ref}\n\n${j.text}\n${this.contextBlock(j.ctx)}${this.boardAccessBlock(j)}\nYou are in a git worktree of the project on branch ${wt.branch}, cut from dev. Make the change, run the project's tests if it has any, and commit your work with a message that starts with "${ref}:". When you are done, reply with a short summary of what you changed and anything left to do.`;
   }
 
   // ---------- project repositories ----------
