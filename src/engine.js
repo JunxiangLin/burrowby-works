@@ -29,6 +29,7 @@ const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
 const QA_SPECIALTY = 'QA tester. Reads the diff, runs the existing tests, adds tests where they are missing, checks every acceptance criterion, and reports plainly what passed and what failed.';
 const MAX_QA_NOTES = 8;
+const MERGE_RESOLVE_ATTEMPTS = 2; // how many times the coder may try to resolve a merge conflict with dev
 
 // Coding jobs: the only tools a worker agent gets, and the shell commands it may run.
 // Everything else is denied without asking (--permission-mode dontAsk).
@@ -161,7 +162,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], ...(t.mergeConflict && typeof t.mergeConflict === 'object' ? { mergeConflict: t.mergeConflict } : {}), order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -740,22 +741,98 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     return false;
   }
 
+  // A merge conflict is never forced or half-merged. The PR stays open and the task goes to Review
+  // with a note naming the conflicting files; `flagged` means automatic resolution was tried and failed.
+  noteConflict(j, ref, files, reason, { attempts = 0, flagged = false } = {}) {
+    const t = j.taskId && this.taskById(j.taskId);
+    const pr = j.pr && j.pr.number;
+    const list = files.length ? files.join(', ') : 'unknown files';
+    const note = `Merge conflict with dev${pr ? ` on PR #${pr}` : ''}: ${list}.${attempts ? ` Automatic resolution failed after ${attempts} attempt${attempts === 1 ? '' : 's'}: ${reason}.` : ` ${reason}.`}${flagged ? ' Needs the owner.' : ''}`;
+    j.merge = { ...(j.merge || {}), status: 'blocked', reason: `merge conflict with dev in ${list}${attempts ? ` (auto-resolve failed after ${attempts}: ${reason})` : ` (${reason})`}`, conflict: { files, attempts, flagged, note }, at: Date.now() };
+    if (!t) return;
+    const labels = new Set(t.labels || []); labels.add('merge conflict'); if (flagged) labels.add('needs owner');
+    Object.assign(t, { labels: [...labels], mergeConflict: { files, attempts, flagged, note, pr: pr || null, at: Date.now() }, updatedAt: Date.now() });
+    if (['backlog', 'todo', 'progress', 'testing'].includes(t.status)) { t.status = 'review'; t.order = Date.now(); }
+    this.upsert('tasks', t);
+  }
+
+  // The original coder resolves the conflicts the app left in the worktree. The agent only edits files:
+  // the app does the commit, the checks and the push.
+  async runResolver(j, wt, ref, files, problem, step) {
+    const coderJob = (j.qaFor && this.jobById(j.qaFor)) || j;
+    const w = this.byWorker(coderJob.workerId) || this.byWorker(j.workerId);
+    const prompt = `Task ${ref}: merge conflict with dev.\n\nThe latest dev has been merged into your branch ${j.branch}, and git stopped on conflicts in: ${files.join(', ')}.\n${problem ? `\nThe last attempt did not work: ${problem}\n` : ''}\nResolve them: open each file, keep both sides' intent, remove every conflict marker (<<<<<<<, =======, >>>>>>>), and run the project's tests. Use "git add" on the files you fixed. Do not commit, merge, rebase, or push; the app does that. Reply with a short summary of how you resolved each file.`;
+    const ctl = this.controllers.get(j.id);
+    await this.claude.stream({
+      exe: this.claude.exe(), model: j.model || coderJob.model, systemPrompt: w ? codeSystemPrompt(w, ref, wt) : undefined, prompt, cwd: wt.dir,
+      signal: ctl ? ctl.signal : new AbortController().signal,
+      onText: () => {}, onRateLimit: () => { this.lastRateLimit = Date.now(); },
+      code: { tools: CODE_TOOLS, allowedTools: CODE_ALLOWED, disallowedTools: CODE_DENIED, maxTurns: CODE_MAX_TURNS, timeoutMs: CODE_TIMEOUT_MS, env: workerEnv(), onStep: step },
+    });
+  }
+
+  async checkWorktree(p, wt, step) {
+    const cmd = (p.checkCmd || '').trim() || this.repos.detectCheck(wt.dir);
+    if (!cmd) return { noCmd: true };
+    step(`Running checks: ${cmd}`);
+    const check = await this.repos.runCheck(wt.dir, cmd, workerEnv());
+    const summary = { cmd, ok: check.ok, exitCode: check.exitCode, ms: check.ms, output: check.output };
+    if (check.ok) step(`Checks passed: ${cmd} (${fmtDur(check.ms)})`);
+    return { check, summary, cmd };
+  }
+
   // Returns true when the PR is ready to merge: no conflict with dev, checks pass.
   async prepareAutoMerge(j, p, wt, ref, step) {
+    let conflictFiles = null;
     try {
       step('Auto-merge: merging the latest dev into the worktree to test the result');
-      const m = await this.repos.mergeDevInto(wt.dir);
-      if (m.conflict) return this.blockMerge(j, ref, `conflicts with dev${m.files.length ? ` in ${m.files.slice(0, 5).join(', ')}` : ''}`, step);
-      const cmd = (p.checkCmd || '').trim() || this.repos.detectCheck(wt.dir);
-      if (!cmd) return this.blockMerge(j, ref, 'no check command (set one in the project settings)', step);
-      step(`Running checks: ${cmd}`);
-      const check = await this.repos.runCheck(wt.dir, cmd, workerEnv());
-      const summary = { cmd, ok: check.ok, exitCode: check.exitCode, ms: check.ms, output: check.output };
-      if (!check.ok) return this.blockMerge(j, ref, `checks failed (${cmd}${check.timedOut ? ', timed out' : `, exit ${check.exitCode}`})`, step, { check: summary });
-      step(`Checks passed: ${cmd} (${fmtDur(check.ms)})`);
-      j.merge = { status: 'checking', check: summary };
+      const m = await this.repos.mergeDevInto(wt.dir, { keep: true });
+      let summary;
+      if (m.conflict) {
+        conflictFiles = m.files;
+        const max = this.mergeResolveAttempts == null ? MERGE_RESOLVE_ATTEMPTS : this.mergeResolveAttempts;
+        step(`Merge conflict with dev in ${m.files.join(', ')}; asking the coder to resolve it (up to ${max} attempt${max === 1 ? '' : 's'})`);
+        let problem = '', tries = 0, resolved = false;
+        j.merge = { status: 'resolving', conflict: { files: m.files, attempts: 0 } };
+        this.jobChanged(j, { persist: false });
+        while (!resolved && tries < max) {
+          tries++;
+          step(`Conflict resolution attempt ${tries} of ${max}`);
+          try {
+            await this.runResolver(j, wt, ref, m.files, problem, step);
+            const fin = await this.repos.finishDevMerge(wt.dir, m.files);
+            if (!fin.ok) { problem = fin.reason; step(`Attempt ${tries} failed: ${problem}`); continue; }
+          } catch (e) {
+            if (e.code === 'cancelled') throw e;
+            problem = redact(e.message); step(`Attempt ${tries} failed: ${problem}`); continue;
+          }
+          const r = await this.checkWorktree(p, wt, step);
+          if (r.noCmd) { problem = 'no check command (set one in the project settings)'; break; }
+          if (!r.check.ok) { problem = `checks failed after the merge (${r.cmd}, exit ${r.check.exitCode}): ${r.check.output.slice(-600)}`; step(`Attempt ${tries} failed: checks failed`); summary = r.summary; continue; }
+          summary = r.summary; resolved = true;
+        }
+        if (!resolved) {
+          await this.repos.abortMerge(wt.dir);
+          this.noteConflict(j, ref, m.files, problem.slice(0, 300) || 'no resolution', { attempts: tries, flagged: true });
+          if (summary) j.merge.check = summary;
+          step(`Left PR #${j.pr.number} open: ${j.merge.reason}`);
+          this.emit('notice', { kind: 'job', job: j.id, text: `PR #${j.pr.number} for ${ref} has a merge conflict the coder could not resolve (${m.files.slice(0, 5).join(', ')}). It needs you.` });
+          return false;
+        }
+        step(`Conflict resolved on attempt ${tries}; pushing ${j.branch}`);
+        await this.repos.pushHead(wt.dir, j.branch);
+        j.merge = { status: 'checking', check: summary, conflict: { files: m.files, attempts: tries, resolved: true } };
+        return true;
+      }
+      const r = await this.checkWorktree(p, wt, step);
+      if (r.noCmd) return this.blockMerge(j, ref, 'no check command (set one in the project settings)', step);
+      if (!r.check.ok) return this.blockMerge(j, ref, `checks failed (${r.cmd}${r.check.timedOut ? ', timed out' : `, exit ${r.check.exitCode}`})`, step, { check: r.summary });
+      j.merge = { status: 'checking', check: r.summary };
       return true;
     } catch (e) {
+      if (conflictFiles) await this.repos.abortMerge(wt.dir).catch(() => {});
+      if (e.code === 'cancelled') throw e;
+      if (conflictFiles) { this.noteConflict(j, ref, conflictFiles, `could not finish: ${redact(e.message)}`, { flagged: true }); step(`Left PR #${j.pr.number} open: ${j.merge.reason}`); this.emit('notice', { kind: 'job', job: j.id, text: `PR #${j.pr.number} for ${ref} needs you: ${j.merge.reason}.` }); return false; }
       return this.blockMerge(j, ref, `could not test the merge: ${redact(e.message)}`, step);
     }
   }
@@ -764,18 +841,31 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     const check = j.merge && j.merge.check;
     try {
       const info = await this.repos.waitMergeable(p.key, j.pr.number);
+      if (info && info.mergeable === 'CONFLICTING') {
+        // GitHub sees a conflict our local test missed; the worktree is gone, so no auto-resolve here.
+        this.noteConflict(j, ref, [], 'GitHub reports a conflict with dev', { flagged: true });
+        j.merge.check = check;
+        step(`Left PR #${j.pr.number} open: ${j.merge.reason}`);
+        this.emit('notice', { kind: 'job', job: j.id, text: `PR #${j.pr.number} for ${ref} needs you: ${j.merge.reason}.` });
+        return;
+      }
       if (!info || info.mergeable !== 'MERGEABLE') {
         return this.blockMerge(j, ref, info && info.mergeable === 'CONFLICTING' ? 'GitHub reports a conflict with dev' : `GitHub says it isn't mergeable yet (${(info && (info.mergeStateStatus || info.mergeable)) || 'unknown'})`, step, { check });
       }
       await this.repos.mergePr(p.key, j.pr.number);
       j.pr = { ...j.pr, merged: true };
-      j.merge = { status: 'merged', at: Date.now(), check };
+      j.merge = { status: 'merged', at: Date.now(), check, ...(j.merge && j.merge.conflict ? { conflict: j.merge.conflict } : {}) };
       for (const x of this.jobs) if (x !== j && x.pr && x.pr.number === j.pr.number && x.projectId === j.projectId) { x.pr = { ...x.pr, merged: true }; this.jobChanged(x); }
       step(`Merged PR #${j.pr.number} into dev`);
       // Merged into dev with checks passing: the task is done. The owner's gate is
       // Release to prod, which lists exactly the PRs it will ship.
       const cur = t && this.taskById(t.id); // t may be stale if a window saved the task meanwhile
-      if (cur) { Object.assign(cur, { status: 'done', order: Date.now() }); this.upsert('tasks', cur); }
+      if (cur) {
+        Object.assign(cur, { status: 'done', order: Date.now() });
+        delete cur.mergeConflict;
+        cur.labels = (cur.labels || []).filter((l) => l !== 'merge conflict' && l !== 'needs owner');
+        this.upsert('tasks', cur);
+      }
       this.emit('notice', { kind: 'job', job: j.id, text: `${ref}: checks passed and PR #${j.pr.number} is merged into dev.` });
     } catch (e) {
       this.blockMerge(j, ref, `merge failed: ${redact(e.message)}`, step, { check });
