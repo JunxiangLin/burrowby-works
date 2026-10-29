@@ -153,6 +153,11 @@ const fakeClaude = {
   assert.strictEqual(reloaded.foreman.name, 'Bao');
   assert.strictEqual(reloaded.concurrency, 3);
   assert.strictEqual(reloaded.workers.length, 1);
+  reloaded.setConcurrency(12);
+  assert.strictEqual(reloaded.concurrency, 12, 'accepts up to 12');
+  reloaded.setConcurrency(13);
+  reloaded.setConcurrency(2.5);
+  assert.strictEqual(reloaded.concurrency, 12, 'rejects out-of-range or fractional values');
   assert.throws(() => Engine.validateImport({ format: 'other' }), /not a Burrowby Works export/);
 
   console.log(`OK: scheduler (peak ${peak}), streaming + TTFT, stop, board -> Review, context block, foreman loop (${foremanCalls.length} calls), retire, persistence, import merge/replace`);

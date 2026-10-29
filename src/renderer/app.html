@@ -27,7 +27,14 @@
         <button type="button" data-c="1" aria-pressed="false">1</button>
         <button type="button" data-c="2" aria-pressed="true">2</button>
         <button type="button" data-c="3" aria-pressed="false">3</button>
+        <button type="button" data-c="4" aria-pressed="false">4</button>
+        <button type="button" data-c="6" aria-pressed="false">6</button>
+        <button type="button" data-c="8" aria-pressed="false">8</button>
+        <button type="button" data-c="12" aria-pressed="false">12</button>
       </div>
+      <input type="number" id="concNum" min="1" max="12" step="1" value="2" aria-label="Jobs at once (1 to 12)" style="width:3.5em"
+        title="High values can hit API rate limits and load your machine with many git worktrees. Lowering never stops running jobs.">
+      <small class="muted" id="concNote" hidden>High values may hit API rate limits and strain git worktrees.</small>
     </div>
   </header>
 

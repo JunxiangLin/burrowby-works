@@ -21,6 +21,8 @@ const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
 const STATUS_LABEL = { queued: 'queued', running: 'running', done: 'shipped', failed: 'failed', cancelled: 'stopped' };
+const MAX_CONCURRENCY = 12;
+const validConc = (n) => Number.isInteger(n) && n >= 1 && n <= MAX_CONCURRENCY;
 const MAX_WORKERS = 12, MAX_OUTPUT = 60000, MAX_CTX = 80000, MAX_JOBS = 300, CTX_BUDGET = 60000;
 const JOB_FIELDS = ['id', 'n', 'text', 'pref', 'workerId', 'tier', 'status', 'createdAt', 'startedAt', 'firstTokenAt', 'finishedAt', 'output', 'error', 'tierApplied', 'inTok', 'outTok', 'simulated', 'truncated', 'ctx', 'taskId', 'projectId', 'model', 'byForeman', 'errorDetail',
   'kind', 'branch', 'worktree', 'pr', 'prError', 'diff', 'steps', 'proposals', 'merge', 'qaFor', 'qa', 'retryOf', 'retries'];
@@ -184,7 +186,7 @@ class Engine extends EventEmitter {
   applyData(d, initial) {
     const f = d.factory || {};
     this.workers = Array.isArray(f.workers) && f.workers.length ? f.workers.filter((w) => w && w.id && w.name).map(normWorker) : DEFAULT_WORKERS.map(normWorker);
-    this.concurrency = [1, 2, 3].includes(f.concurrency) ? f.concurrency : 2;
+    this.concurrency = validConc(f.concurrency) ? f.concurrency : 2;
     this.foreman = normForeman(f.foreman);
     this.autoAcceptPm = f.autoAcceptPm !== false;
     const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
@@ -799,8 +801,9 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   clearFinished() { return this.deleteJobs(this.jobs.filter((j) => !this.isActive(j)).map((j) => j.id)); }
 
   // ---------- factory ----------
+  // Lowering never stops running jobs; the scheduler just won't start new ones until the count drops.
   setConcurrency(c) {
-    if (![1, 2, 3].includes(c)) return;
+    if (!validConc(c)) return;
     this.concurrency = c;
     this.changed('factory');
     this.schedule();
@@ -808,7 +811,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   // Whole-factory save from the main window (worker edits, hires, jobs at once, foreman).
   setFactory(f) {
     if (Array.isArray(f.workers) && f.workers.length) this.workers = f.workers.filter((w) => w && w.id && w.name).slice(0, MAX_WORKERS).map(normWorker);
-    if ([1, 2, 3].includes(f.concurrency)) this.concurrency = f.concurrency;
+    if (validConc(f.concurrency)) this.concurrency = f.concurrency;
     if (f.foreman) this.foreman = normForeman(f.foreman);
     if (typeof f.autoAcceptPm === 'boolean') this.autoAcceptPm = f.autoAcceptPm;
     this.changed('factory');
@@ -1047,7 +1050,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
       },
       set_jobs_at_once(i, msg) {
         const n = Number(i.n);
-        if (![1, 2, 3].includes(n)) throw new Error('n must be 1, 2 or 3.');
+        if (!validConc(n)) throw new Error(`n must be a whole number from 1 to ${MAX_CONCURRENCY}.`);
         E.setConcurrency(n);
         msg.actions.push(`Jobs at once: ${n}`);
         return { jobs_at_once: n };
@@ -1257,7 +1260,7 @@ const TOOL_SPECS = [
   { name: 'hire_worker', description: 'Hire a new worker (up to 12).', input: { name: 'worker name', species: SPECIES.join(' | '), specialty: 'what they are good at and how they work', capability: '"text" | "code" | "pm" | "qa"' } },
   { name: 'update_worker', description: "Change a worker's name, species, specialty or capability.", input: { worker: 'current worker name', name: 'new name', species: SPECIES.join(' | '), specialty: 'new specialty', capability: '"text" | "code" | "pm" | "qa"' }, required: ['worker'] },
   { name: 'retire_worker', description: 'Retire a worker who is not mid-job. Their queued jobs go to any free worker.', input: { worker: 'worker name' }, required: ['worker'] },
-  { name: 'set_jobs_at_once', description: 'Set how many jobs run at the same time.', input: { n: '1 | 2 | 3' }, required: ['n'] },
+  { name: 'set_jobs_at_once', description: 'Set how many jobs run at the same time.', input: { n: 'whole number from 1 to 12' }, required: ['n'] },
   { name: 'set_project_repo', description: "Give a project a repository (GitHub URL or local folder). The app clones it under the owner's Burrowby folder and makes sure prod and dev branches exist.", input: { project: 'project key', source: 'GitHub URL or local folder path' }, required: ['project', 'source'] },
   { name: 'list_prs', description: "List a project's open pull requests.", input: { project: 'project key' }, required: ['project'] },
   { name: 'merge_pr', description: 'Merge a pull request into dev. Refuses any PR that does not target dev.', input: { project: 'project key', pr: 'PR number' }, required: ['project', 'pr'] },
