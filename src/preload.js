@@ -35,6 +35,13 @@ const works = {
   releaseToProd: invoke('works:release'),
   releasePreview: invoke('works:release-preview'),
   repoInfo: invoke('works:repo-info'),
+  // Self-update of the app's own folder (see src/updater.js)
+  updateStatus: invoke('update:get'),
+  checkUpdate: invoke('update:check'),
+  applyUpdate: invoke('update:apply'),
+  restartForUpdate: invoke('update:restart'),
+  cancelRestart: invoke('update:cancel'),
+  onUpdate: on('update:status'),
   openSettings: () => ipcRenderer.send('settings:open'),
   openApp: (view) => ipcRenderer.send('app:open', view),
   petCommand: (cmd) => ipcRenderer.send('pet:command', cmd),
@@ -60,6 +67,12 @@ contextBridge.exposeInMainWorld('petApi', {
 });
 
 contextBridge.exposeInMainWorld('settings', {
+  updateStatus: invoke('update:get'),
+  checkUpdate: invoke('update:check'),
+  applyUpdate: invoke('update:apply'),
+  restartForUpdate: invoke('update:restart'),
+  cancelRestart: invoke('update:cancel'),
+  onUpdate: on('update:status'),
   status: invoke('settings:status'),
   recheck: invoke('settings:recheck'),
   saveConfig: invoke('settings:save-config'),
