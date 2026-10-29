@@ -176,6 +176,71 @@ module.exports = async function codeChecks() {
   assert.ok(engine.stopAll() >= 2);
   await wait(100);
 
+  // --- auto-send: Todo tasks become jobs on their own (BWI-14)
+  {
+    const release = [];
+    let running = 0, peakRunning = 0;
+    const slow = {
+      exe: () => 'claude.exe', modelFor: () => 'm', cwd: tmp,
+      stream: () => new Promise((resolve) => { running++; peakRunning = Math.max(peakRunning, running); release.push(() => { running--; resolve({ text: 'done', stopReason: 'end_turn' }); }); }),
+    };
+    const e2 = new Engine({ dir: path.join(tmp, 'auto'), claude: slow, repos: {} });
+    assert.strictEqual(e2.autoSend, false, 'auto-send is off by default');
+    e2.setConcurrency(1);
+    e2.setFactory({ workers: e2.workers.map((w) => ({ ...w, capability: 'text' })) }); // plain jobs: no real worktrees needed
+    const ap = e2.makeProject({ name: 'Auto', key: 'AUTO' });
+    ap.repo = { source: 's', path: tmp, url: '', github: false, status: 'ready', error: '' }; // pretend the repo is set up
+    const mk = (title, status = 'todo', extra = {}) => e2.makeTask(e2.projectById(ap.id), { title, status, ...extra });
+    const jobsFor = (t) => e2.jobs.filter((x) => x.taskId === t.id).length;
+
+    const off = mk('Off by default');
+    assert.strictEqual(jobsFor(off), 0, 'off: nothing is sent');
+    assert.strictEqual(e2.taskById(off.id).status, 'todo');
+
+    e2.setFactory({ autoSend: true });
+    assert.strictEqual(e2.autoSend, true);
+    const bl = mk('Starts in backlog', 'backlog');
+    assert.strictEqual(jobsFor(bl), 0);
+    e2.upsert('tasks', { ...bl, status: 'todo' }); // moved to Todo
+    assert.strictEqual(jobsFor(bl), 1, 'moving to Todo creates exactly one job');
+    assert.strictEqual(e2.taskById(bl.id).status, 'progress');
+    // duplicates: edit, move away and back, send again by hand-style re-save
+    e2.upsert('tasks', { ...e2.taskById(bl.id), title: 'Edited' });
+    e2.upsert('tasks', { ...e2.taskById(bl.id), status: 'backlog' });
+    e2.upsert('tasks', { ...e2.taskById(bl.id), status: 'todo' });
+    assert.strictEqual(jobsFor(bl), 1, 'no duplicate job after edits or moving again');
+
+    // created straight into Todo; queue limit of 1 holds the rest back, none dropped
+    const q1 = mk('Queue one', 'todo', { assignee: 'w_biscuit' });
+    const q2 = mk('Queue two');
+    assert.strictEqual(jobsFor(q1) + jobsFor(q2), 2, 'created in Todo is sent');
+    await wait(50);
+    assert.strictEqual(peakRunning, 1, 'jobs-at-once limit respected');
+    assert.strictEqual(e2.jobs.filter((x) => x.status === 'queued').length, 2, 'extra tasks wait in the queue');
+    assert.strictEqual(e2.jobs.find((x) => x.taskId === q1.id).pref, 'w_biscuit', 'assignee is used');
+    for (let i = 0; i < 20 && release.length < 3; i++) { release.splice(0).forEach((f) => f()); await wait(50); }
+    release.splice(0).forEach((f) => f());
+    await wait(50);
+    assert.ok(e2.jobs.filter((x) => x.taskId).every((x) => x.status === 'done'), 'queued jobs all ran eventually');
+    assert.strictEqual(peakRunning, 1);
+
+    // per-project override beats the global setting
+    e2.setProjectAutoSend('AUTO', false);
+    assert.strictEqual(jobsFor(mk('Project says off')), 0);
+    e2.setFactory({ autoSend: false });
+    e2.setProjectAutoSend('AUTO', true);
+    assert.strictEqual(jobsFor(mk('Project says on')), 1);
+    e2.setProjectAutoSend('AUTO', null);
+    assert.strictEqual(jobsFor(mk('Back to global off')), 0);
+    // no repo set up: never auto-sent
+    e2.setFactory({ autoSend: true });
+    const np = e2.makeProject({ name: 'NoRepo', key: 'NOR' });
+    assert.strictEqual(jobsFor(e2.makeTask(e2.projectById(np.id), { title: 'x' })), 0, 'no repo, no auto-send');
+    release.splice(0).forEach((f) => f());
+    await wait(50);
+    e2.saveNow();
+  }
+
   engine.saveNow();
   console.log('OK: repo setup (prod/dev), coding job in a worktree -> app push -> PR into dev -> Review, app commits leftovers, no-change jobs fail, merge only into dev, release to prod, safety rails, PM tickets, foreman hire/update/list PRs, stop all');
   fs.rmSync(tmp, { recursive: true, force: true });
