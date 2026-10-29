@@ -66,6 +66,19 @@ const test = async (name, fn) => { try { await fn(); console.log('PASS: ' + name
     clearTimeout(E.saveTimer);
   });
 
+  await test('failed save retries every 5 seconds', () => {
+    const dir = tmpdir();
+    const E = mk(dir);
+    const orig = fs.writeFileSync;
+    const origT = global.setTimeout;
+    let delay;
+    fs.writeFileSync = () => { throw new Error('nope'); };
+    global.setTimeout = (fn, ms) => { delay = ms; return origT(() => {}, 0); };
+    try { E.saveNow(); } finally { fs.writeFileSync = orig; global.setTimeout = origT; }
+    assert.strictEqual(delay, 5000);
+    clearTimeout(E.saveTimer);
+  });
+
   await test('corrupt works.json is backed up before autosave can overwrite it', () => {
     const dir = tmpdir();
     fs.writeFileSync(path.join(dir, 'works.json'), '{ not json');
