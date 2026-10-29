@@ -1022,11 +1022,59 @@ function openTask(t, isNew) {
   $('tdPrio').innerHTML = selOpts(Object.entries(PRIO).map(([k, v]) => [k, v[0]]), t.priority || 'med');
   $('tdAssignee').innerHTML = selOpts([['', 'Any free worker'], ...workers.map(w => [w.id, w.name])], t.assignee || '');
   $('tdDue').value = t.due || ''; $('tdLabels').value = (t.labels || []).join(', ');
-  paintTaskCtx(); $('tdDelete').hidden = isNew;
+  paintTaskCtx(); paintQa(); $('tdDelete').hidden = isNew;
   paintTaskRuns(true);
   $('projDrawer').hidden = true; $('taskDrawer').hidden = false;
   if (isNew) setTimeout(() => $('tdTitle').focus(), 30);
 }
+// --- acceptance-criteria QA gate: criteria come from the "Acceptance:" part of the description
+function parseCriteria(desc) {
+  const out = []; let on = false;
+  for (const line of String(desc || '').split('\n')) {
+    const m = line.match(/^\s*(?:#+\s*)?acceptance(?:\s+criteria)?\s*:?\s*(.*)$/i);
+    if (m) { on = true; for (const s of m[1].split(';')) if (s.trim()) out.push(s.trim().replace(/\.$/, '')); continue; }
+    if (!on) continue;
+    const b = line.match(/^\s*(?:[-*]|\d+[.)])\s*(?:\[[ xX]?\]\s*)?(.+)$/);
+    if (b) out.push(b[1].trim()); else if (line.trim()) on = false;
+  }
+  return out.slice(0, 20);
+}
+function qaItems(t, desc) {
+  const old = (t.acceptance && t.acceptance.items) || [];
+  return parseCriteria(desc).map(text => old.find(i => i.text === text) || { text, result: '', note: '' });
+}
+function canFinish(t, desc) {
+  const items = qaItems(t, desc);
+  return !items.length || !!(t.acceptance && t.acceptance.override) || items.every(i => i.result === 'pass');
+}
+function paintQa() {
+  const t = editingTask, box = $('tdQa'), items = t && !taskIsNew ? qaItems(t, $('tdDesc').value) : [];
+  box.hidden = !items.length;
+  const st = $('tdStatus');
+  if (items.length) {
+    const ov = !!(t.acceptance && t.acceptance.override), pass = items.filter(i => i.result === 'pass').length;
+    box.innerHTML = `<span class="label">QA checklist</span>` + items.map((i, n) => `<div class="qa-row"><span>${esc(i.text)}</span><span class="seg"><button type="button" class="pass" data-qa="${n}" data-r="pass" aria-pressed="${i.result === 'pass'}">Pass</button><button type="button" class="fail" data-qa="${n}" data-r="fail" aria-pressed="${i.result === 'fail'}">Fail</button></span><input type="text" data-note="${n}" maxlength="300" placeholder="Note" aria-label="Note for criterion ${n + 1}" value="${esc(i.note || '')}"></div>`).join('') +
+      `<div class="qa-sum">${pass}/${items.length} pass${t.acceptance && t.acceptance.checkedAt ? ` · checked ${ago(t.acceptance.checkedAt)}` : ''}</div>` +
+      `<label style="display:flex;gap:8px;align-items:center;text-transform:none;letter-spacing:0"><input type="checkbox" data-ov style="width:auto" ${ov ? 'checked' : ''}> Owner override: allow Done without all passing</label>`;
+  }
+  const ok = canFinish(t || {}, $('tdDesc').value);
+  for (const o of st.options) if (o.value === 'done') { o.disabled = !ok && t && !taskIsNew; o.textContent = o.disabled ? 'Done (needs QA pass)' : 'Done'; }
+}
+function saveQa(mut) {
+  const t = editingTask; if (!t || taskIsNew) return;
+  const items = qaItems(t, $('tdDesc').value);
+  t.acceptance = { items, override: !!(t.acceptance && t.acceptance.override), checkedAt: Date.now() };
+  mut(t.acceptance); saveTask(t); paintQa();
+}
+$('tdQa').addEventListener('click', e => {
+  const b = e.target.closest('[data-qa]'); if (!b) return;
+  saveQa(a => { const i = a.items[+b.dataset.qa]; i.result = i.result === b.dataset.r ? '' : b.dataset.r; });
+});
+$('tdQa').addEventListener('change', e => {
+  if (e.target.matches('[data-ov]')) saveQa(a => { a.override = e.target.checked; a.overrideAt = a.override ? Date.now() : 0; });
+  else if (e.target.matches('[data-note]')) saveQa(a => { a.items[+e.target.dataset.note].note = e.target.value.trim().slice(0, 300); });
+});
+$('tdDesc').addEventListener('input', paintQa);
 function paintTaskCtx() {
   const t = editingTask, p = projectById(t.projectId), pc = new Set(p ? p.ctx || [] : []);
   $('tdCtx').innerHTML = contexts.length ? contexts.map(c => `<label><input type="checkbox" data-c="${c.id}" ${pc.has(c.id) || (t.ctx || []).includes(c.id) ? 'checked' : ''} ${pc.has(c.id) ? 'disabled' : ''}> ${esc(c.title || 'Untitled')}${pc.has(c.id) ? ' <em style="color:var(--muted);font-style:normal">(project)</em>' : ''}<span>≈${fmtNum(tok(c.content))}</span></label>`).join('') : '<div class="empty">No context yet. Add entries in the Context library.</div>';
@@ -1055,6 +1103,7 @@ function saveTaskForm() {
   if (!title) { toast('Give the task a title.'); $('tdTitle').focus(); return null; }
   const f = { title: title.slice(0, 140), desc: $('tdDesc').value.trim(), status: $('tdStatus').value, priority: $('tdPrio').value, assignee: $('tdAssignee').value, due: $('tdDue').value,
     labels: $('tdLabels').value.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8), ctx: [...$('tdCtx').querySelectorAll('input[data-c]:checked:not(:disabled)')].map(i => i.dataset.c) };
+  if (f.status === 'done' && !taskIsNew && f.status !== t.status && !canFinish(t, f.desc)) { toast('Mark every acceptance criterion pass, or use the owner override, before Done.'); $('tdStatus').value = t.status; return null; }
   let real;
   if (taskIsNew) { real = makeTask(p, f); taskIsNew = false; editingTask = real; }
   else { if (f.status !== t.status) t.order = Date.now(); Object.assign(t, f); saveTask(t); real = t; }
@@ -1165,7 +1214,8 @@ $('cols').addEventListener('dragover', e => { const col = e.target.closest('[dat
 $('cols').addEventListener('drop', e => {
   const col = e.target.closest('[data-col]'); if (!col) return; e.preventDefault();
   const t = taskById(e.dataTransfer.getData('text/plain')); dragging = false;
-  if (t && t.status !== col.dataset.col) { t.status = col.dataset.col; t.order = Date.now(); saveTask(t); }
+  if (t && col.dataset.col === 'done' && t.status !== 'done' && !canFinish(t, t.desc)) toast(`${taskKey(t)} needs every acceptance criterion passed (or an owner override) before Done. Open it to run the QA checklist.`);
+  else if (t && t.status !== col.dataset.col) { t.status = col.dataset.col; t.order = Date.now(); saveTask(t); }
   renderBoard();
 });
 
