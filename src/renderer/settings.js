@@ -27,6 +27,7 @@
   async function load() {
     const st = await window.settings.status();
     showCli(st.cli);
+    if (st.version) $('app-version').textContent = 'v' + st.version;
     $('cli-path').value = st.config.claudePath || '';
     for (const k of ['model', 'quickModel', 'deepModel']) $(k).value = st.config[k];
     $('roam').checked = st.config.roam;

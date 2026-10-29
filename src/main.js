@@ -330,7 +330,7 @@ function registerIpc() {
   ipcMain.handle('works:repo-info', async () => ({ root: engine.repos.root, appDir: engine.repos.appDir, gh: await engine.repos.ghStatus() }));
 
   // Settings window
-  ipcMain.handle('settings:status', () => ({ cli: cliStatus, config: store.getConfig(), dataDir: store.dir, foreman: engine.foreman }));
+  ipcMain.handle('settings:status', () => ({ cli: cliStatus, config: store.getConfig(), dataDir: store.dir, foreman: engine.foreman, version: app.getVersion() }));
   ipcMain.handle('settings:recheck', () => refreshClaude());
   ipcMain.handle('settings:save-config', (_e, patch) => {
     const allowed = {};
