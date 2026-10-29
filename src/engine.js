@@ -166,7 +166,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], deps: Array.isArray(t.deps) ? t.deps.map(String) : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], audit: Array.isArray(t.audit) ? t.audit.slice(-MAX_AUDIT).map(normAudit) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -202,6 +202,7 @@ class Engine extends EventEmitter {
     this.foreman = normForeman(f.foreman);
     this.autoAcceptPm = f.autoAcceptPm !== false;
     this.autoSummary = f.autoSummary !== false;
+    this.autoPull = f.autoPull === true; // BWI-37: off by default
     const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
     this.jobs = (d.jobs || []).filter((j) => j && j.id && j.text).map(normJob).sort(byCreated);
     this.projects = (d.projects || []).filter((p) => p && p.id && p.name).map(normProject).sort(byCreated);
@@ -212,7 +213,7 @@ class Engine extends EventEmitter {
   }
 
   factoryDoc() {
-    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman }, autoAcceptPm: this.autoAcceptPm !== false, autoSummary: this.autoSummary !== false };
+    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman }, autoAcceptPm: this.autoAcceptPm !== false, autoSummary: this.autoSummary !== false, autoPull: this.autoPull === true };
   }
 
   exportDoc() {
@@ -355,6 +356,62 @@ class Engine extends EventEmitter {
       running++;
       this.runJob(j, w);
     }
+    this.autoPullBacklog();
+  }
+
+  // ---------- BWI-37: PM auto-pull ----------
+  // A task is blocked while any task listed in its `deps` (keys like P-3) is not done.
+  isBlocked(t) {
+    return (t.deps || []).some((k) => { const d = this.findTask(k); return d && d.status !== 'done'; });
+  }
+  // Higher score = the worker's specialty matches the ticket's labels/title better.
+  specialtyScore(w, t) {
+    const spec = String(w.specialty || '').toLowerCase();
+    const words = [...(t.labels || []), ...String(t.title || '').split(/\W+/)].map((x) => String(x).toLowerCase()).filter((x) => x.length > 3 && x !== 'proposed' && x !== 'suggested');
+    return words.filter((x) => spec.includes(x)).length;
+  }
+  // Workers that could take a pulled ticket right now (never PM or QA workers).
+  idleWorkers() {
+    if (this.jobs.some((j) => j.status === 'queued')) return [];
+    const room = this.concurrency - this.jobs.filter((j) => j.status === 'running').length;
+    if (room <= 0) return [];
+    return this.workers.filter((w) => (w.capability === 'code' || w.capability === 'text') && !this.workerBusy(w)).slice(0, room);
+  }
+  // Picks the highest-priority unblocked Backlog tickets that fit the idle workers and sends them to the factory.
+  // Never more tickets than idle workers; never touches releases. Returns [{ task, worker }].
+  autoPullBacklog() {
+    if (this.autoPull !== true || this._pulling) return [];
+    const idle = this.idleWorkers();
+    if (!idle.length) return [];
+    const rank = { urgent: 0, high: 1, med: 2, low: 3 };
+    const active = new Set(this.jobs.filter((j) => this.isActive(j) && j.taskId).map((j) => j.taskId));
+    const cands = this.tasks
+      .filter((t) => t.status === 'backlog' && !active.has(t.id) && !this.isBlocked(t))
+      .sort((a, b) => (rank[a.priority] - rank[b.priority]) || ((a.order || 0) - (b.order || 0)));
+    const free = [...idle], picks = [];
+    for (const t of cands) {
+      if (!free.length) break;
+      const coding = this.repoReady(this.projectById(t.projectId));
+      const fits = free.filter((w) => (coding ? w.capability === 'code' : true));
+      if (!fits.length) continue;
+      // Code tickets need a coder; other tickets prefer non-coders so coders stay free for code.
+      const pool = coding ? fits : (fits.some((w) => w.capability !== 'code') ? fits.filter((w) => w.capability !== 'code') : fits);
+      pool.sort((a, b) => this.specialtyScore(b, t) - this.specialtyScore(a, t));
+      const w = pool[0];
+      free.splice(free.indexOf(w), 1);
+      picks.push({ task: t, worker: w });
+    }
+    if (!picks.length) return [];
+    this._pulling = true;
+    try {
+      for (const { task: t, worker: w } of picks) {
+        const why = `Picked by PM auto-pull: ${PRIO[t.priority]} priority, unblocked, and ${w.name} (${w.capability === 'code' ? 'coder' : 'writer'}) is idle.`;
+        t.assignee = w.id;
+        t.desc = t.desc ? `${t.desc}\n\n${why}` : why;
+        this.sendTask(t.id, { autoPulled: true });
+      }
+    } finally { this._pulling = false; }
+    return picks;
   }
 
   repoReady(p) { return !!(p && p.repo && p.repo.status === 'ready' && p.repo.path && this.repos); }
@@ -907,6 +964,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if (f.foreman) this.foreman = normForeman(f.foreman);
     if (typeof f.autoAcceptPm === 'boolean') this.autoAcceptPm = f.autoAcceptPm;
     if (typeof f.autoSummary === 'boolean') this.autoSummary = f.autoSummary;
+    if (typeof f.autoPull === 'boolean') this.autoPull = f.autoPull;
     this.changed('factory');
     this.schedule();
     return this.factoryDoc();
@@ -1008,7 +1066,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     const lastQa = (t.qa || [])[(t.qa || []).length - 1];
     const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}${lastQa && lastQa.verdict === 'fail' ? `\n\nQA failed the previous attempt. Fix these problems:\n${lastQa.notes}` : ''}`;
     const j = this.createJob(text, t.assignee && this.byWorker(t.assignee) ? t.assignee : 'any', 'default', { ctx, taskId: t.id, projectId: t.projectId, ...extra });
-    const actor = extra.byForeman ? 'Foreman' : 'You';
+    const actor = extra.autoPulled ? 'PM' : extra.byForeman ? 'Foreman' : 'You';
     if (t.status !== 'progress') this.logAudit(t, 'status', actor, `Status: ${this.colLabel(t.status)} -> ${this.colLabel('progress')} (sent to factory, job #${j.n})`);
     Object.assign(t, { jobs: [...(t.jobs || []), j.id], status: 'progress', order: Date.now() });
     this.upsert('tasks', t);
