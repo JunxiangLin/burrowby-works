@@ -292,12 +292,14 @@ module.exports = async function codeChecks() {
   // PM worker: proposed tickets, accepted onto the Backlog.
   assert.strictEqual(parseTickets('no json').length, 0);
   engine.saveWorker({ ...engine.byWorker('w_juniper'), capability: 'pm' });
+  engine.setFactory({ autoAcceptPm: false }); // BWI-17: auto-accept is on by default; this checks the manual flow
   const jp = engine.createJob('Plan the next sprint', 'w_juniper', 'default', { projectId: p.id });
   await until(jp);
   assert.strictEqual(jp.kind, 'pm');
   assert.strictEqual(jp.proposals.length, 2);
   assert.deepStrictEqual(engine.acceptProposals(jp.id, [0]), ['DEMO-6']);
   assert.strictEqual(engine.findTask('DEMO-6').status, 'backlog');
+  engine.setFactory({ autoAcceptPm: true });
 
   // Foreman staff tools: hire, update, jobs at once, list PRs; then stop all.
   foremanScript = [
