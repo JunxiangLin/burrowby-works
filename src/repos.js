@@ -1,7 +1,7 @@
 // Project repositories: managed clones under %USERPROFILE%\Burrowby\projects,
 // per-task git worktrees on feature branches, and the push / PR / merge /
 // release steps. Only the app runs these; worker agents never push.
-const { execFile } = require('child_process');
+const { execFile, exec } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -128,6 +128,57 @@ class Repos {
     const numstat = (await git(dir, 'diff', '--numstat', `${base}..HEAD`)).trim();
     const files = numstat ? numstat.split('\n').map((l) => { const [a, d, f] = l.split('\t'); return { file: f, add: a === '-' ? 0 : +a, del: d === '-' ? 0 : +d }; }) : [];
     return { head, commits, autoCommitted, files, insertions: files.reduce((s, f) => s + f.add, 0), deletions: files.reduce((s, f) => s + f.del, 0) };
+  }
+
+  // ---------- auto-merge support ----------
+  // The project's check command: explicit, or `npm run check` / `npm test` from package.json.
+  detectCheck(dir) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(path.join(dir, 'package.json'), 'utf8'));
+      const sc = pkg.scripts || {};
+      if (sc.check) return 'npm run check';
+      if (sc.test && !/no test specified/.test(sc.test)) return 'npm test';
+    } catch { /* not a Node project */ }
+    return '';
+  }
+
+  // Merge the latest dev into the worktree locally (never pushed), so a conflict
+  // shows up before GitHub and the check runs on what the merge will produce.
+  async mergeDevInto(dir) {
+    this.assertSafe(dir);
+    await git(dir, 'fetch', 'origin', DEV);
+    try {
+      await run('git', ['-c', 'user.name=Burrowby Works', '-c', 'user.email=burrowby@localhost', 'merge', '--no-ff', '--no-edit', `origin/${DEV}`], { cwd: dir });
+      return { conflict: false };
+    } catch (e) {
+      const files = (await git(dir, 'diff', '--name-only', '--diff-filter=U').catch(() => '')).trim().split('\n').filter(Boolean);
+      await git(dir, 'merge', '--abort').catch(() => {});
+      return { conflict: true, files };
+    }
+  }
+
+  // Run the check command in the worktree. `env` is the scrubbed worker environment:
+  // this runs project code, so it gets no secrets either.
+  runCheck(dir, cmd, env, timeout = 15 * 60 * 1000) {
+    this.assertSafe(dir);
+    const started = Date.now();
+    return new Promise((resolve) => {
+      exec(cmd, { cwd: dir, env, timeout, windowsHide: true, maxBuffer: 20 * 1024 * 1024 }, (err, stdout, stderr) => {
+        const out = redact(`${stdout || ''}${stderr ? `\n${stderr}` : ''}`).trim();
+        resolve({ cmd, ok: !err, exitCode: err ? (typeof err.code === 'number' ? err.code : 1) : 0, timedOut: !!(err && err.killed), ms: Date.now() - started, output: out.slice(-4000) });
+      });
+    });
+  }
+
+  // GitHub computes mergeability lazily; poll briefly while it is UNKNOWN.
+  async waitMergeable(key, number, { tries = 10, delayMs = 3000 } = {}) {
+    let info = null;
+    for (let i = 0; i < tries; i++) {
+      info = JSON.parse(await this.gh(['pr', 'view', String(number), '--json', 'mergeable,mergeStateStatus,baseRefName,state'], { cwd: this.clonePath(key), timeout: 30000 }));
+      if (info.mergeable !== 'UNKNOWN') break;
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+    return info;
   }
 
   async push(key, branch) {

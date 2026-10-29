@@ -34,10 +34,16 @@ module.exports = async function codeChecks() {
   g(tmp, 'clone', '-q', '--bare', seed, origin);
 
   const ghCalls = [];
+  const ghConflicts = new Set(); // PR numbers GitHub should report as CONFLICTING
   const fakeGh = async (args) => {
     ghCalls.push(args);
     if (args[0] === 'auth') return 'ok';
-    if (args[0] === 'pr' && args[1] === 'create') return `https://github.com/demo/repo/pull/${ghCalls.filter((a) => a[1] === 'create').length}\n`;
+    if (args[0] === 'pr' && args[1] === 'create') {
+      const n = ghCalls.filter((a) => a[1] === 'create').length;
+      if (/ghconflict/.test(args[args.indexOf('--title') + 1])) ghConflicts.add(n);
+      return `https://github.com/demo/repo/pull/${n}\n`;
+    }
+    if (args[0] === 'pr' && args[1] === 'view' && /mergeable/.test(args[4])) return JSON.stringify({ mergeable: ghConflicts.has(+args[2]) ? 'CONFLICTING' : 'MERGEABLE', mergeStateStatus: ghConflicts.has(+args[2]) ? 'DIRTY' : 'CLEAN', baseRefName: 'dev', state: 'OPEN' });
     if (args[0] === 'pr' && args[1] === 'view') return JSON.stringify({ number: +args[2], baseRefName: args[2] === '99' ? 'prod' : 'dev', state: 'OPEN', url: `https://github.com/demo/repo/pull/${args[2]}`, title: 't' });
     if (args[0] === 'pr' && args[1] === 'merge') return '';
     if (args[0] === 'pr' && args[1] === 'list') return JSON.stringify([{ number: 1, title: 'DEMO-1: x', url: 'u', baseRefName: 'dev', headRefName: 'feature/x', isDraft: false }]);
@@ -60,6 +66,7 @@ module.exports = async function codeChecks() {
     },
     async stream(opts) {
       if (!opts.code) return { text: 'Notes.\n```json\n{"tickets":[{"title":"Add login","description":"Users can sign in.","priority":"high"},{"title":"Add logout","description":"Users can sign out.","priority":"low"}]}\n```', stopReason: 'end_turn', inTok: 10, outTok: 10 };
+      if (opts.cwd.includes(`${path.sep}AUTO${path.sep}`)) return autoAgent(opts);
       codeRuns.push(opts);
       const mode = codeRuns.length; // 1: commits itself, 2: leaves changes uncommitted, 3: changes nothing
       opts.code.onStep('Read README.md');
@@ -76,7 +83,29 @@ module.exports = async function codeChecks() {
       return { text: 'Added hire.js.', stopReason: 'end_turn', inTok: 50, outTok: 20 };
     },
   };
+  // Fake coding agent for project AUTO; the task title says what it does.
+  let autoOrigin = null;
+  async function autoAgent(opts) {
+    const title = (opts.prompt.match(/^Task AUTO-\d+\n\n(.*)/) || [])[1] || '';
+    const file = (name, text) => fs.writeFileSync(path.join(opts.cwd, name), text);
+    if (/^fail/.test(title)) file('fail.txt', 'oops\n');
+    else if (/^race/.test(title)) {
+      file('shared.txt', 'mine\n');
+      // Meanwhile someone lands a conflicting change on dev.
+      const other = path.join(tmp, `other-${Date.now()}`);
+      g(tmp, 'clone', '-q', '-b', 'dev', autoOrigin, other);
+      fs.writeFileSync(path.join(other, 'shared.txt'), 'theirs\n');
+      g(other, ...ident, 'commit', '-q', '-am', 'conflicting change on dev');
+      g(other, 'push', '-q', 'origin', 'dev');
+    } else file(`feature-${Date.now()}.txt`, `${title}\n`);
+    g(opts.cwd, 'add', '-A');
+    g(opts.cwd, ...ident, 'commit', '-q', '-m', `${title}`);
+    opts.onText('Done.');
+    return { text: 'Done.', stopReason: 'end_turn', inTok: 5, outTok: 5 };
+  }
+  const notices = [];
   const engine = new Engine({ dir: path.join(tmp, 'data'), claude, repos });
+  engine.on('notice', (n) => notices.push(n));
   assert.strictEqual(engine.byWorker('w_biscuit').capability, 'code', 'the coder defaults to code capability');
   assert.strictEqual(engine.byWorker('w_mochi').capability, 'text');
 
@@ -210,7 +239,77 @@ module.exports = async function codeChecks() {
   assert.ok(engine.stopAll() >= 2);
   await wait(100);
 
+  // ---------- auto-merge (project AUTO, with a real `npm run check`) ----------
+  // check.js fails when fail.txt exists; package.json's "check" script makes the
+  // app auto-detect `npm run check`, which runs with the scrubbed worker env.
+  const autoSeed = path.join(tmp, 'auto-seed');
+  fs.mkdirSync(autoSeed);
+  g(autoSeed, 'init', '-q', '-b', 'main');
+  g(autoSeed, 'config', 'core.autocrlf', 'false');
+  fs.writeFileSync(path.join(autoSeed, 'package.json'), JSON.stringify({ name: 'auto', private: true, scripts: { check: 'node check.js' } }, null, 2));
+  fs.writeFileSync(path.join(autoSeed, 'check.js'), "const fs = require('fs');\nif (fs.existsSync('fail.txt')) { console.error('1 test failed: fail.txt is present'); process.exit(1); }\nconsole.log('all checks passed');\n");
+  fs.writeFileSync(path.join(autoSeed, 'shared.txt'), 'base\n');
+  g(autoSeed, 'add', '-A');
+  g(autoSeed, ...ident, 'commit', '-q', '-m', 'init');
+  autoOrigin = path.join(tmp, 'auto.git');
+  g(tmp, 'clone', '-q', '--bare', autoSeed, autoOrigin);
+  const pa = engine.makeProject({ name: 'Auto', key: 'AUTO' });
+  await engine.setProjectRepo('AUTO', autoOrigin);
+  engine.projectById(pa.id).repo.github = true;
+  assert.strictEqual(engine.projectById(pa.id).autoMerge, true, 'auto-merge defaults to on');
+  const runTask = async (title) => {
+    const t = engine.makeTask(engine.projectById(pa.id), { title, assignee: 'w_biscuit' });
+    const j = engine.sendTask(t.id);
+    await until(j);
+    return { t: engine.taskById(t.id), j };
+  };
+  const mergeCalls = () => ghCalls.filter((a) => a[1] === 'merge').map((a) => a.join(' '));
+
+  // Checks pass -> the app merges the PR into dev (merge commit) and the task is Done.
+  const before = mergeCalls().length;
+  const ok = await runTask('pass: add a feature');
+  assert.strictEqual(ok.j.status, 'done', ok.j.errorDetail);
+  assert.strictEqual(ok.j.merge.status, 'merged', JSON.stringify(ok.j.merge));
+  assert.strictEqual(ok.j.merge.check.cmd, 'npm run check');
+  assert.ok(ok.j.merge.check.ok && /all checks passed/.test(ok.j.merge.check.output));
+  assert.ok(ok.j.pr.merged);
+  assert.strictEqual(ok.t.status, 'done');
+  assert.deepStrictEqual(mergeCalls().slice(before), [`pr merge ${ok.j.pr.number} --merge --delete-branch`]);
+  assert.ok(ok.j.steps.some((s) => /^Checks passed: npm run check/.test(s)) && ok.j.steps.some((s) => /^Merged PR #\d+ into dev/.test(s)));
+  assert.ok(!fs.existsSync(path.join(root, 'worktrees', 'AUTO', ok.j.branch.replace('feature/', ''))), 'worktree removed');
+  assert.strictEqual(g(autoOrigin, 'rev-parse', 'prod'), g(autoSeed, 'rev-parse', 'main'), 'prod never changes on its own');
+
+  // Checks fail -> PR left open, task stays in Review, reason and output recorded.
+  const bad = await runTask('fail: break the checks');
+  assert.strictEqual(bad.j.status, 'done');
+  assert.strictEqual(bad.j.merge.status, 'blocked');
+  assert.match(bad.j.merge.reason, /^checks failed \(npm run check, exit \d+\)/);
+  assert.match(bad.j.merge.check.output, /fail\.txt is present/);
+  assert.ok(!bad.j.pr.merged);
+  assert.strictEqual(bad.t.status, 'review');
+  assert.strictEqual(mergeCalls().length, before + 1, 'no merge attempted');
+  assert.ok(notices.some((n) => /needs you: checks failed/.test(n.text)), 'the owner is told');
+
+  // dev moves on with a conflicting change while the worker runs -> caught locally, PR left open.
+  const race = await runTask('race: edit shared.txt');
+  assert.strictEqual(race.j.merge.status, 'blocked');
+  assert.match(race.j.merge.reason, /^conflicts with dev in shared\.txt/);
+  assert.strictEqual(race.t.status, 'review');
+
+  // GitHub says the PR is not mergeable -> left open.
+  const ghc = await runTask('ghconflict: another feature');
+  assert.strictEqual(ghc.j.merge.status, 'blocked');
+  assert.match(ghc.j.merge.reason, /GitHub reports a conflict/);
+
+  // Auto-merge off for the project -> no checks, no merge, task in Review.
+  engine.upsert('projects', { ...engine.projectById(pa.id), autoMerge: false });
+  assert.strictEqual(engine.projectById(pa.id).autoMerge, false);
+  const off = await runTask('pass: with auto-merge off');
+  assert.strictEqual(off.j.merge, undefined);
+  assert.strictEqual(off.t.status, 'review');
+  assert.strictEqual(mergeCalls().length, before + 1);
+
   engine.saveNow();
-  console.log('OK: repo setup (prod/dev), coding job in a worktree -> app push -> PR into dev -> Review, app commits leftovers, no-change jobs fail, merge only into dev, release to prod, safety rails, PM tickets, foreman hire/update/list PRs, stop all');
+  console.log('OK: repo setup (prod/dev), coding job in a worktree -> app push -> PR into dev -> Review, app commits leftovers, no-change jobs fail, merge only into dev, release preview + fast-forward (stale refs, repeat click, diverged), auto-merge (pass -> merged + Done; failing checks, dev conflict, GitHub conflict, setting off -> left open in Review), safety rails, PM tickets, foreman hire/update/list PRs, stop all');
   fs.rmSync(tmp, { recursive: true, force: true });
 };
