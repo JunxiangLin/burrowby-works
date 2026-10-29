@@ -187,6 +187,7 @@ class Engine extends EventEmitter {
     this.concurrency = [1, 2, 3].includes(f.concurrency) ? f.concurrency : 2;
     this.foreman = normForeman(f.foreman);
     this.autoAcceptPm = f.autoAcceptPm !== false;
+    this.autoSummary = f.autoSummary !== false;
     const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
     this.jobs = (d.jobs || []).filter((j) => j && j.id && j.text).map(normJob).sort(byCreated);
     this.projects = (d.projects || []).filter((p) => p && p.id && p.name).map(normProject).sort(byCreated);
@@ -197,7 +198,7 @@ class Engine extends EventEmitter {
   }
 
   factoryDoc() {
-    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman }, autoAcceptPm: this.autoAcceptPm !== false };
+    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman }, autoAcceptPm: this.autoAcceptPm !== false, autoSummary: this.autoSummary !== false };
   }
 
   exportDoc() {
@@ -401,7 +402,35 @@ class Engine extends EventEmitter {
     this.schedule();
   }
 
+  // Writes a finished job's result to the context library so search_context finds it.
+  // One entry per job (stable id), so a repeat call updates rather than duplicates.
+  saveJobSummary(j) {
+    const w = this.byWorker(j.workerId);
+    const p = this.projectById(j.projectId);
+    const t = j.taskId && this.taskById(j.taskId);
+    const head = String(j.text || '').split('\n')[0].slice(0, 80);
+    const lines = [
+      `Job #${j.n} finished by ${w ? w.name : 'a worker'}${p ? ` (project ${p.key}${t ? `, task ${this.taskKey(t)}` : ''})` : ''}.`,
+      `Request: ${String(j.text || '').slice(0, 1000)}`,
+      j.branch ? `Branch: ${j.branch}${j.pr ? ` (PR #${j.pr.number})` : ''}` : '',
+      '',
+      'Result:',
+      String(j.output || '').slice(0, 6000),
+    ];
+    return this.upsert('contexts', {
+      id: `c_job_${j.id}`,
+      title: `Job #${j.n} summary: ${head}`,
+      kind: 'note',
+      tags: ['job-summary', `job-${j.n}`, ...(p ? [p.key] : []), ...(w ? [w.name] : [])],
+      content: redact(lines.filter((x, i) => x || i === 3).join('\n')),
+      createdAt: Date.now(),
+    });
+  }
+
   onJobFinished(j) {
+    if (j.status === 'done' && this.autoSummary !== false) {
+      try { this.saveJobSummary(j); } catch (e) { /* a failed summary must never break job completion */ }
+    }
     const t = j.taskId && this.taskById(j.taskId);
     if (j.qaFor) this.onQaFinished(j, t);
     else if (t && j.status === 'done' && ['backlog', 'todo', 'progress'].includes(t.status)) {
@@ -811,6 +840,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     if ([1, 2, 3].includes(f.concurrency)) this.concurrency = f.concurrency;
     if (f.foreman) this.foreman = normForeman(f.foreman);
     if (typeof f.autoAcceptPm === 'boolean') this.autoAcceptPm = f.autoAcceptPm;
+    if (typeof f.autoSummary === 'boolean') this.autoSummary = f.autoSummary;
     this.changed('factory');
     this.schedule();
     return this.factoryDoc();
