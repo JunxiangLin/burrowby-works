@@ -943,6 +943,16 @@ function renderBoard() {
   paintRelease(p);
   renderSuggest(); renderCols();
 }
+// BWI-37: PM auto-pull indicator and toggle (off by default).
+let autoPull = false;
+function paintAutoPull() {
+  const b = $('autoPullBtn'); if (!b) return;
+  b.textContent = autoPull ? 'PM auto-pull: On' : 'PM auto-pull: Off';
+  b.setAttribute('aria-pressed', String(autoPull));
+  b.classList.toggle('primary', autoPull);
+}
+$('autoPullBtn').addEventListener('click', () => { autoPull = !autoPull; paintAutoPull(); api.setFactory({ autoPull }); });
+paintAutoPull();
 let repoRoot = '%USERPROFILE%\\Burrowby';
 api.repoInfo().then(i => { repoRoot = i.root; if (view === 'board') renderBoard(); }).catch(() => {});
 // Release status: what "Release to prod" would ship, from freshly fetched refs
@@ -1542,7 +1552,8 @@ function applyFactory(f) {
   const before = workers.map(w => w.id).join();
   workers = mergeList(workers, f.workers);
   for (const id of [...vis.keys()]) if (!byWorker(id)) vis.delete(id);
-  concurrency = f.concurrency; foreman = f.foreman;
+  concurrency = f.concurrency; foreman = f.foreman; autoPull = f.autoPull === true;
+  paintAutoPull();
   if (before !== workers.map(w => w.id).join()) layout();
   syncWorkerSelect(); syncConc(); syncForemanUI();
 }
