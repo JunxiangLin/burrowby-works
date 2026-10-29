@@ -124,6 +124,7 @@ module.exports = async function codeChecks() {
   }
   const notices = [];
   const engine = new Engine({ dir: path.join(tmp, 'data'), claude, repos });
+  engine.maxRetries = 0; // these scenarios script exact job sequences; auto-retry is covered in check.js
   engine.on('notice', (n) => notices.push(n));
   assert.strictEqual(engine.byWorker('w_biscuit').capability, 'code', 'the coder defaults to code capability');
   assert.strictEqual(engine.byWorker('w_mochi').capability, 'text');
@@ -228,7 +229,7 @@ module.exports = async function codeChecks() {
   assert.strictEqual(engine.taskById(t5.id).status, 'review');
 
   // The column order and verdict parsing.
-  assert.deepStrictEqual(COLS.map((c) => c[0]), ['backlog', 'todo', 'progress', 'testing', 'review', 'done'], 'Testing sits between In progress and Review');
+  assert.deepStrictEqual(COLS.map((c) => c[0]), ['backlog', 'todo', 'progress', 'testing', 'review', 'blocked', 'done'], 'Testing sits between In progress and Review; Blocked before Done');
   assert.deepStrictEqual(parseQa('Looks fine.\nVERDICT: PASS'), { verdict: 'pass', notes: 'Looks fine.' });
   assert.strictEqual(parseQa('Broke.\nverdict: fail - see above').verdict, 'fail');
   assert.strictEqual(parseQa('no verdict here').verdict, null);

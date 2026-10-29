@@ -16,7 +16,7 @@ const DEFAULT_WORKERS = [
   { id: 'w_juniper', name: 'Juniper', species: 'cat', specialty: 'Writer. Drafts emails, posts and docs in a warm, plain voice. Keeps things short.' },
   { id: 'w_clover', name: 'Clover', species: 'frog', specialty: 'Analyst. Breaks problems into steps, makes rough estimates, and ends with a clear recommendation.' },
 ];
-const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];
+const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['blocked', 'Blocked'], ['done', 'Done']];
 const PRIO = { low: 'Low', med: 'Medium', high: 'High', urgent: 'Urgent' };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
@@ -29,6 +29,9 @@ const CAPABILITIES = ['text', 'code', 'pm', 'qa'];
 const QA_NAMES = ['Mochi', 'Pebble', 'Olive', 'Button', 'Toast'];
 const QA_SPECIALTY = 'QA tester. Reads the diff, runs the existing tests, adds tests where they are missing, checks every acceptance criterion, and reports plainly what passed and what failed.';
 const MAX_QA_NOTES = 8;
+const DEFAULT_MAX_RETRIES = 2, MAX_RETRIES_LIMIT = 10;
+const LOG_RETENTION_MS = 30 * 24 * 3600e3, LOG_PRUNE_EVERY_MS = 6 * 3600e3;
+const normRetries = (n) => (Number.isInteger(n) && n >= 0 && n <= MAX_RETRIES_LIMIT ? n : DEFAULT_MAX_RETRIES);
 
 // Coding jobs: the only tools a worker agent gets, and the shell commands it may run.
 // Everything else is denied without asking (--permission-mode dontAsk).
@@ -152,7 +155,7 @@ function normJob(j) {
 }
 const normRepo = (r) => (r && typeof r === 'object' && (r.source || r.path) ? { source: redact(r.source || ''), path: r.path || '', url: redact(r.url || ''), github: !!r.github, status: ['ready', 'setting-up', 'error'].includes(r.status) ? r.status : 'error', error: r.error ? redact(r.error) : '' } : null);
 const normProject = (p) => ({ id: String(p.id), name: String(p.name).slice(0, 60), key: String(p.key || keyFrom(p.name)).toUpperCase().slice(0, 5), color: p.color || COLORS[0], desc: String(p.desc || ''), ctx: Array.isArray(p.ctx) ? p.ctx : [], seq: p.seq || 0, createdAt: p.createdAt || Date.now(), updatedAt: p.updatedAt, repo: normRepo(p.repo), lastRelease: p.lastRelease && p.lastRelease.sha ? p.lastRelease : null, autoMerge: p.autoMerge !== false, checkCmd: String(p.checkCmd || '').slice(0, 300) });
-const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
+const normTask = (t) => ({ id: String(t.id), projectId: String(t.projectId), n: t.n || 0, title: String(t.title).slice(0, 140), desc: String(t.desc || ''), status: COLS.some((c) => c[0] === t.status) ? t.status : 'todo', priority: PRIO[t.priority] ? t.priority : 'med', assignee: t.assignee || '', labels: Array.isArray(t.labels) ? t.labels : [], due: t.due || '', ctx: Array.isArray(t.ctx) ? t.ctx : [], jobs: Array.isArray(t.jobs) ? t.jobs : [], qa: Array.isArray(t.qa) ? t.qa.slice(-MAX_QA_NOTES) : [], failures: Math.max(0, +t.failures || 0), blockedReason: t.status === 'blocked' ? String(t.blockedReason || '') : '', order: t.order || Date.now(), createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt });
 const normCtx = (c) => ({ id: String(c.id), title: String(c.title || 'Untitled').slice(0, 120), kind: KINDS[c.kind] ? c.kind : 'note', tags: Array.isArray(c.tags) ? c.tags : [], content: String(c.content || '').slice(0, MAX_CTX), createdAt: c.createdAt || Date.now(), updatedAt: c.updatedAt });
 const normMsg = (m) => ({ id: m.id || uid('m_'), role: m.role === 'user' ? 'user' : 'assistant', text: String(m.text || '').slice(0, 8000), actions: Array.isArray(m.actions) ? m.actions.slice(0, 20).map(String) : [], t: m.t || 0, error: !!m.error });
 
@@ -167,7 +170,11 @@ class Engine extends EventEmitter {
     this.lastRateLimit = 0;
     this.chatBusy = false;
     this.chatCtl = null;
+    this.logDir = path.join(dir, 'logs');
     this.load();
+    this.pruneLogs();
+    this.pruneTimer = setInterval(() => this.pruneLogs(), LOG_PRUNE_EVERY_MS);
+    if (this.pruneTimer.unref) this.pruneTimer.unref();
   }
 
   // ---------- persistence ----------
@@ -185,6 +192,7 @@ class Engine extends EventEmitter {
     const f = d.factory || {};
     this.workers = Array.isArray(f.workers) && f.workers.length ? f.workers.filter((w) => w && w.id && w.name).map(normWorker) : DEFAULT_WORKERS.map(normWorker);
     this.concurrency = [1, 2, 3].includes(f.concurrency) ? f.concurrency : 2;
+    this.maxRetries = normRetries(f.maxRetries);
     this.foreman = normForeman(f.foreman);
     const byCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
     this.jobs = (d.jobs || []).filter((j) => j && j.id && j.text).map(normJob).sort(byCreated);
@@ -196,7 +204,7 @@ class Engine extends EventEmitter {
   }
 
   factoryDoc() {
-    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, foreman: { ...this.foreman } };
+    return { workers: this.workers.map((w) => ({ ...w })), concurrency: this.concurrency, maxRetries: this.maxRetries, foreman: { ...this.foreman } };
   }
 
   exportDoc() {
@@ -411,9 +419,65 @@ class Engine extends EventEmitter {
         this.emit('notice', { kind: 'task-review', text: `${this.taskKey(t)} is ready for review.` });
       }
     }
+    if (j.status === 'failed') {
+      this.writeFailedLog(j);
+      if (t && !j.qaFor) this.retryOrBlock(j, t);
+    }
     const w = this.byWorker(j.workerId);
     if (j.status === 'done') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `${w ? w.name : 'A worker'} finished job #${j.n}.${j.byForeman ? ' Want the summary?' : ''}` });
     else if (j.status === 'failed') this.emit('notice', { kind: 'job', job: j.id, byForeman: !!j.byForeman, text: `Job #${j.n} failed (${j.error}).${j.byForeman ? ' Want me to retry it?' : ''}` });
+  }
+
+  // ---------- retry cap ----------
+  // A failed worker run on a task is retried automatically until the task has
+  // used up maxRetries retries; the next failure blocks the task.
+  retryOrBlock(j, t) {
+    if (t.status !== 'progress') return; // a person moved the task; leave it
+    t.failures = (t.failures || 0) + 1;
+    t.updatedAt = Date.now();
+    const key = this.taskKey(t);
+    if (t.failures > this.maxRetries) {
+      Object.assign(t, { status: 'blocked', blockedReason: 'retry limit', order: Date.now() });
+      this.changed('tasks');
+      this.emit('notice', { kind: 'task-blocked', text: `${key} is blocked: retry limit reached after ${t.failures} failed run(s). See the logs on the ticket.` });
+      return;
+    }
+    const r = this.createJob(j.text, j.workerId && this.byWorker(j.workerId) ? j.workerId : 'any', j.tier, { ctx: j.ctx, taskId: t.id, projectId: j.projectId, byForeman: j.byForeman });
+    t.jobs = [...(t.jobs || []), r.id];
+    this.changed('tasks');
+    this.emit('notice', { kind: 'task-retry', text: `${key}: retrying (retry ${t.failures} of ${this.maxRetries}).` });
+  }
+
+  // ---------- failed-run logs ----------
+  // One JSON file per failed job in <dir>/logs, kept for 30 days.
+  writeFailedLog(j) {
+    try {
+      fs.mkdirSync(this.logDir, { recursive: true });
+      const log = { jobId: j.id, n: j.n, taskId: j.taskId || null, projectId: j.projectId || null, kind: j.kind || 'text', workerId: j.workerId || null, error: j.error || '', errorDetail: redact(j.errorDetail || ''), steps: (j.steps || []).map(redact), output: redact(j.output || ''), startedAt: j.startedAt || null, at: j.finishedAt || Date.now() };
+      fs.writeFileSync(path.join(this.logDir, `${j.id}.json`), JSON.stringify(log));
+      this.pruneLogs();
+    } catch { /* logging must never break the job pipeline */ }
+  }
+
+  logFiles() {
+    try { return fs.readdirSync(this.logDir).filter((f) => f.endsWith('.json')); } catch { return []; }
+  }
+
+  pruneLogs(now = Date.now()) {
+    let removed = 0;
+    for (const f of this.logFiles()) {
+      const file = path.join(this.logDir, f);
+      const log = readJson(file);
+      let at = log && log.at;
+      if (!at) { try { at = fs.statSync(file).mtimeMs; } catch { continue; } }
+      if (now - at > LOG_RETENTION_MS) { try { fs.unlinkSync(file); removed++; } catch { /* in use; next pass */ } }
+    }
+    return removed;
+  }
+
+  // Logs of failed runs for a ticket, newest first.
+  taskLogs(taskId) {
+    return this.logFiles().map((f) => readJson(path.join(this.logDir, f))).filter((l) => l && l.taskId === taskId).sort((a, b) => b.at - a.at);
   }
 
   // ---------- QA stage ----------
@@ -798,6 +862,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
   setFactory(f) {
     if (Array.isArray(f.workers) && f.workers.length) this.workers = f.workers.filter((w) => w && w.id && w.name).slice(0, MAX_WORKERS).map(normWorker);
     if ([1, 2, 3].includes(f.concurrency)) this.concurrency = f.concurrency;
+    if (f.maxRetries !== undefined) this.maxRetries = normRetries(f.maxRetries);
     if (f.foreman) this.foreman = normForeman(f.foreman);
     this.changed('factory');
     this.schedule();
@@ -871,7 +936,7 @@ Reply with short QA notes: what you ran, what passed, what failed and why. Make 
     const lastQa = (t.qa || [])[(t.qa || []).length - 1];
     const text = `${t.title}${t.desc ? '\n\n' + t.desc : ''}${lastQa && lastQa.verdict === 'fail' ? `\n\nQA failed the previous attempt. Fix these problems:\n${lastQa.notes}` : ''}`;
     const j = this.createJob(text, t.assignee && this.byWorker(t.assignee) ? t.assignee : 'any', 'default', { ctx, taskId: t.id, projectId: t.projectId, ...extra });
-    Object.assign(t, { jobs: [...(t.jobs || []), j.id], status: 'progress', order: Date.now() });
+    Object.assign(t, { jobs: [...(t.jobs || []), j.id], status: 'progress', order: Date.now(), failures: 0, blockedReason: '' }); // a person sending it resets the retry count
     this.upsert('tasks', t);
     return j;
   }

@@ -19,6 +19,7 @@ const works = {
   upsert: invoke('works:upsert'),
   remove: invoke('works:remove'),
   sendTask: invoke('works:send-task'),
+  taskLogs: invoke('works:task-logs'),
   sampleProject: invoke('works:sample-project'),
   suggestTasks: invoke('works:suggest-tasks'),
   askForeman: invoke('works:ask'),

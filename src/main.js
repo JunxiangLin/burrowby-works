@@ -307,6 +307,7 @@ function registerIpc() {
   ipcMain.handle('works:upsert', (_e, coll, obj) => engine.upsert(coll, obj));
   ipcMain.handle('works:remove', (_e, coll, id) => engine.remove(coll, id));
   ipcMain.handle('works:send-task', (_e, id) => engine.sendTask(id));
+  ipcMain.handle('works:task-logs', (_e, id) => engine.taskLogs(String(id)));
   ipcMain.handle('works:sample-project', () => engine.sampleProject());
   ipcMain.handle('works:suggest-tasks', (_e, id) => engine.suggestTasks(id));
   ipcMain.handle('works:ask', (_e, text) => engine.askForeman(text));

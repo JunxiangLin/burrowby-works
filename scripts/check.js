@@ -22,6 +22,7 @@ const fakeClaude = {
   // Worker jobs: stream a few deltas, can be aborted.
   stream(opts) {
     workerPrompts.push(opts);
+    if (opts.prompt.includes('FAILME')) return Promise.reject(Object.assign(new Error('boom'), { code: 'upstream_error', text: 'partial output' }));
     return new Promise((resolve, reject) => {
       inFlight++;
       peak = Math.max(peak, inFlight);
@@ -117,6 +118,34 @@ const fakeClaude = {
   foremanScript = [(opts) => { assert.match(opts.prompt, /Owner: Get Juniper/); return { reply: 'All done.', actions: [{ tool: 'get_factory_status', input: {} }] }; }, { reply: 'Everyone is idle.', actions: [] }];
   assert.strictEqual((await engine.askForeman('Status?')).message.text, 'Everyone is idle.');
 
+  // --- retry cap: 2 automatic retries, then Blocked with reason 'retry limit'; failed-run logs kept 30 days
+  assert.strictEqual(engine.maxRetries, 2, 'default retry cap');
+  const bt = engine.makeTask(engine.projectById(p.id), { title: 'FAILME task', status: 'todo' });
+  engine.sendTask(bt.id);
+  await wait(400);
+  const bt2 = engine.taskById(bt.id);
+  assert.strictEqual(bt2.jobs.length, 3, 'first run + 2 retries');
+  assert.strictEqual(bt2.status, 'blocked');
+  assert.strictEqual(bt2.blockedReason, 'retry limit');
+  assert.ok(notices.some((n) => n.kind === 'task-blocked'));
+  const logs = engine.taskLogs(bt.id);
+  assert.strictEqual(logs.length, 3, 'a log per failed run');
+  assert.strictEqual(logs[0].errorDetail, 'boom');
+  assert.strictEqual(logs[0].output, 'partial output');
+  engine.sendTask(bt.id); // a person sending it again resets the count
+  assert.strictEqual(engine.taskById(bt.id).failures, 0);
+  engine.setFactory({ maxRetries: 0 });
+  assert.strictEqual(engine.maxRetries, 0, 'cap is configurable');
+  await wait(200);
+  assert.strictEqual(engine.taskById(bt.id).status, 'blocked', 'cap 0: first failure blocks');
+  engine.setFactory({ maxRetries: 2 });
+  const old = path.join(engine.logDir, logs[2].jobId + '.json');
+  const oldLog = JSON.parse(fs.readFileSync(old, 'utf8'));
+  fs.writeFileSync(old, JSON.stringify({ ...oldLog, at: Date.now() - 31 * 24 * 3600e3 }));
+  assert.strictEqual(engine.pruneLogs(), 1, 'logs older than 30 days are pruned');
+  assert.ok(!fs.existsSync(old));
+  assert.strictEqual(engine.taskLogs(bt.id).length, 3, 'newer logs kept');
+
   // --- retire
   assert.strictEqual(engine.retireWorker('w_clover').ok, true);
   assert.strictEqual(engine.workers.length, 3);
@@ -125,7 +154,7 @@ const fakeClaude = {
   engine.saveNow();
   const reloaded = new Engine({ dir, claude: fakeClaude });
   assert.strictEqual(reloaded.jobs.length, engine.jobs.length);
-  assert.strictEqual(reloaded.tasks.length, 6);
+  assert.strictEqual(reloaded.tasks.length, 7);
   assert.strictEqual(reloaded.chat.length, 4);
   assert.strictEqual(reloaded.workers.length, 3);
 

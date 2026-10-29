@@ -841,7 +841,7 @@ canvas.addEventListener('click', e => {
 });
 
 // ---------- projects, board, context library ----------
-const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['done', 'Done']];
+const COLS = [['backlog', 'Backlog'], ['todo', 'To do'], ['progress', 'In progress'], ['testing', 'Testing'], ['review', 'Review'], ['blocked', 'Blocked'], ['done', 'Done']];
 const PRIO = { low: ['Low', 'var(--s-wait)'], med: ['Medium', 'var(--s-walk)'], high: ['High', 'var(--warn)'], urgent: ['Urgent', 'var(--crit)'] };
 const KINDS = { note: 'Note', doc: 'Reference doc', data: 'Data', style: 'Style guide', snippet: 'Snippet' };
 const COLORS = ['#DC5434', '#3E8FB0', '#2C8C58', '#8E6BD6', '#D99A1E', '#C2497F'];
@@ -1048,6 +1048,12 @@ function paintTaskRuns(force) {
   const latest = js.find(j => j.output);
   $('tdRuns').innerHTML = js.length ? qaHTML + `<span class="label">Factory runs</span><div class="joblist">${js.map(j => { const [sl, sc] = STATUS[j.status]; const w = byWorker(j.workerId || j.pref); return `<div class="job" data-job="${j.id}" role="button" tabindex="0"><img src="${avatar(w ? w.species : 'chick')}" alt=""><span class="txt">Job #${j.n} · ${w ? esc(w.name) : 'any worker'}</span><span class="pill" style="--c:${sc}">${sl}</span><span class="meta"><span>${j.startedAt ? fmtDur(runMs(j)) : 'waiting'}</span><span>≈${fmtNum(j.outTok || 0)} tok</span>${j.kind === 'code' && j.steps ? `<span>${j.steps.length} steps</span>` : ''}${j.diff ? `<span>+${j.diff.insertions} −${j.diff.deletions}</span>` : ''}<span>${ago(j.createdAt)}</span></span></div>${j.kind === 'code' || j.kind === 'qa' ? `<div class="legend" style="margin:2px 0 6px 40px">${j.branch ? `<span>${esc(j.branch)}</span>` : ''}${prHTML(j)}${j.merge ? `<span>${mergeHTML(j)}</span>` : ''}</div>` : ''}`; }).join('')}</div>` +
     (latest ? `<span class="label">Latest output · job #${latest.n}</span><div class="output">${md(latest.output)}</div>` : '') : '<div class="empty">Not sent to the factory yet.</div>';
+  if (t.status === 'blocked') $('tdRuns').insertAdjacentHTML('afterbegin', `<div class="output"><b>Blocked</b>: ${esc(t.blockedReason || 'blocked')}. Send it to the factory again to reset the retry count.</div>`);
+  const tid = t.id;
+  api.taskLogs(tid).then(logs => {
+    if (!logs.length || !editingTask || editingTask.id !== tid) return;
+    $('tdRuns').insertAdjacentHTML('beforeend', `<span class="label">Failed-run logs (kept 30 days)</span>` + logs.map(l => `<details class="output"><summary>Job #${l.n} · ${esc(l.error || 'failed')} · ${ago(l.at)}</summary>${l.errorDetail ? `<p>${esc(l.errorDetail)}</p>` : ''}${(l.steps || []).length ? `<pre>${esc(l.steps.join('\n'))}</pre>` : ''}${l.output ? `<pre>${esc(l.output)}</pre>` : ''}</details>`).join(''));
+  }).catch(() => {});
 }
 function saveTaskForm() {
   const t = editingTask, p = t && projectById(t.projectId); if (!p) return null;
