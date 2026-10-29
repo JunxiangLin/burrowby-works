@@ -78,5 +78,26 @@
   });
   $('open-data').addEventListener('click', () => window.settings.openDataFolder());
 
+  // App updates: always shows the current state, the reason and the manual commands.
+  const UPD = { apply: ['Update now', 'primary'], restart: ['Restart now', 'primary'], cancel: ['Cancel restart', ''], check: ['Check now', ''] };
+  function paintUpd(st) {
+    if (!st) return;
+    $('upd-text').textContent = st.state === 'unknown' ? 'Not checked yet.' : st.text;
+    $('upd-dir').textContent = st.dir ? `App folder: ${st.dir}` : '';
+    $('upd-manual').hidden = !(st.manual && st.manual.length);
+    $('upd-manual').textContent = (st.manual || []).join('\n');
+    const acts = [...new Set([...(st.actions || []).filter((a) => UPD[a]), 'check'])];
+    $('upd-actions').innerHTML = acts.map((a) => `<button data-upd="${a}" class="${UPD[a][1]}">${UPD[a][0]}</button>`).join('');
+  }
+  $('upd-actions').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-upd]');
+    if (!b) return;
+    b.disabled = true;
+    const a = b.dataset.upd;
+    paintUpd(await (a === 'apply' ? window.settings.applyUpdate() : a === 'restart' ? window.settings.restartForUpdate() : a === 'cancel' ? window.settings.cancelRestart() : window.settings.checkUpdate()));
+  });
+  window.settings.onUpdate(paintUpd);
+  window.settings.updateStatus().then(paintUpd);
+
   load();
 })();

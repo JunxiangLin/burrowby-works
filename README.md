@@ -178,6 +178,37 @@ Releasing: only the **Release to prod** button on the Board does it.
   GitHub or Anthropic tokens before they're shown or saved.
 - **Stop all jobs** sits in the Control room header, in the pet's right-click menu, and in the foreman's tools.
 
+## Keeping the app up to date
+
+The app runs from its own folder, a git checkout of `prod` (normally `%USERPROFILE%\Burrowby\app`; it's whatever
+`app.getAppPath()` returns, the folder the shortcut passes to `electron.exe`). It keeps that folder at `origin/prod` by itself:
+
+- **After a Release to prod.** Right after a successful release, the app fetches and fast-forwards its folder. Releasing a different
+  project leaves the folder up to date, and nothing is shown.
+- **At startup and every 10 minutes.** It compares `HEAD` with `origin/prod` and shows **Update available** when prod moved
+  without the button, for example after a release on GitHub. **Update now** does the same fast-forward.
+
+When the update has been applied, the main window, the pet's popover and its bubble say *Updated to `<sha>` (N changes). Restart now?*
+The pet's right-click menu also gets an entry.
+
+- **Restart now** waits for **running jobs to finish**; no new jobs start meanwhile. Queued jobs stay queued, are saved, and start
+  again after the restart. While it waits it says so and offers **Cancel restart**. Then it relaunches (`app.relaunch()` +
+  `app.exit(0)`).
+- **If `package-lock.json` changed**, `npm ci` can't run while the app is open: it would replace the `electron.exe` that's running
+  and that the shortcut points at. Instead a small PowerShell helper starts as the app exits. It waits for the app to close, runs
+  `npm ci`, checks that the same `electron.exe` exists, and relaunches. If `electron.exe` is missing it shows a message with the
+  command to run instead. Its log is `update-install.log` in the app's user data folder.
+
+The app never touches its folder unless it's a clean checkout of `prod` that can fast-forward. Otherwise it shows the reason and the
+commands to fix it by hand. The banner, and always **Settings → App updates**, show them:
+
+| Situation | What you see |
+| --- | --- |
+| Uncommitted changes to tracked files (untracked files are fine) | the changed files, then `git status`, `git stash`, `git pull --ff-only origin prod` |
+| On another branch | the branch, then `git checkout prod`, `git pull --ff-only origin prod` |
+| Local commits that prod doesn't have (no fast-forward) | how many, then `git log origin/prod..HEAD`, and `git reset --hard origin/prod` only if you don't need them |
+| Not a git checkout | how to clone `prod` into the folder |
+
 ## Importing from the Burrowby Works artifact
 
 1. In the artifact, open the Factory and click **Export data** in the Control room. It saves a `burrowby-works-*.json` file.
@@ -279,6 +310,9 @@ Starts the real app with a throwaway data folder. It covers:
 Don't touch the mouse while it runs. Screenshots go to `smoke-out/`. Set `SMOKE_LIVE=1` to also run one real Quick job and one foreman message through Claude Code.
 
 ## Updating from a newer artifact
+
+> **Note:** many later PRs (BWI-24, BWI-27, BWI-32, BW-1, BW-7, BW-14 and others, plus the update bar) edited `src/renderer/app.js`,
+> `app.html` and `app.css` directly, so re-running the port script now would drop their changes. Fold them into the script first.
 
 `scripts/port-artifact.py` regenerates `src/renderer/app.html`, `app.css` and `app.js` from the artifact's source file. Every
 replacement in it is asserted, so if the artifact changed in a way the port doesn't expect, the script stops and names the line

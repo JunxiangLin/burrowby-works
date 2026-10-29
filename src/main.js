@@ -9,6 +9,7 @@ const { execFile } = require('child_process');
 const { Engine, SPECIES } = require('./engine');
 const { Repos } = require('./repos');
 const cli = require('./cli');
+const { Updater, installScript, planRestart } = require('./updater');
 const { buildDigest } = require('./digest');
 
 // The GitHub CLI may be installed after the app started, so look it up on each call.
@@ -197,7 +198,10 @@ function trayIcon() {
 function petMenu() {
   const config = store.getConfig();
   const foreman = engine.foreman;
+  const upd = updateMenuItems();
   return Menu.buildFromTemplate([
+    ...upd,
+    ...(upd.length ? [{ type: 'separator' }] : []),
     { label: 'Open chat', click: () => sendToOverlay('open-chat') },
     { label: 'Show daily digest', click: () => sendToOverlay('digest', makeDigest()) },
     { label: 'Open Burrowby Works', click: () => openApp() },
@@ -287,6 +291,110 @@ async function exportAuditToFile(parent, taskId) {
 }
 
 // ---------- IPC ----------
+// ---------- self-update ----------
+// The app keeps its own folder (app.getAppPath(), a checkout of prod) at origin/prod:
+// after a Release to prod, at startup and every 10 minutes. See src/updater.js.
+let updater = null;
+let updateStatus = { state: 'unknown' };
+let lastNotifiedRemote = null;
+const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+function describeUpdate(st) {
+  switch (st.state) {
+    case 'up-to-date': return { text: `Burrowby Works is up to date (${st.head}).`, actions: ['check'], show: false };
+    case 'available': return { text: `Update available: ${st.head} → ${st.remote} (${plural(st.behind, 'change')}).`, actions: ['apply'], show: true };
+    case 'updating': return { text: 'Updating Burrowby Works…', actions: [], show: true };
+    case 'ready': return { text: `Updated to ${st.to} (${plural(st.changes, 'change')}). Restart now?${st.needsInstall ? ' Dependencies changed, so npm ci runs while the app restarts.' : ''}`, actions: ['restart', 'later'], show: true };
+    case 'restarting': return { text: `Restarting after ${plural(st.waitFor, 'running job')} finish${st.waitFor === 1 ? 'es' : ''}. New jobs wait until after the restart; queued jobs stay queued.`, actions: ['cancel'], show: true };
+    case 'blocked': return { text: `Can't update the app automatically: ${st.message}`, actions: ['check'], show: !!(st.afterRelease || st.behind > 0) };
+    case 'error': return { text: `Update problem: ${st.message}`, actions: ['check'], show: true };
+    default: return { text: 'Update status unknown.', actions: ['check'], show: false };
+  }
+}
+
+function setUpdateStatus(st) {
+  updateStatus = { ...st, ...describeUpdate(st), dir: updater ? updater.dir : app.getAppPath(), at: Date.now() };
+  broadcast('update:status', updateStatus);
+  // Tell the pet once per new prod commit, and whenever an update is ready.
+  const key = `${st.state}:${st.remote || st.to || st.reason || ''}`;
+  if (updateStatus.show && ['available', 'ready', 'blocked', 'error'].includes(st.state) && key !== lastNotifiedRemote) {
+    lastNotifiedRemote = key;
+    broadcast('works:notice', { kind: 'update', text: updateStatus.text });
+  }
+  return updateStatus;
+}
+
+const busyUpdating = () => ['updating', 'ready', 'restarting'].includes(updateStatus.state);
+
+async function checkForUpdate() {
+  if (!updater || busyUpdating()) return updateStatus;
+  try { return setUpdateStatus(await updater.inspect()); } catch (err) { return setUpdateStatus({ state: 'error', message: err.message }); }
+}
+
+async function applyUpdate({ afterRelease = false } = {}) {
+  if (!updater || busyUpdating()) return updateStatus;
+  setUpdateStatus({ state: 'updating' });
+  try {
+    const r = await updater.update();
+    // A release of some other project leaves the app folder up to date: say nothing.
+    return setUpdateStatus(r.state === 'blocked' ? { ...r, afterRelease } : r);
+  } catch (err) {
+    return setUpdateStatus({ state: 'error', message: err.message });
+  }
+}
+
+// Restart into the new version. Running jobs finish first (no new ones start);
+// queued jobs are saved and resume after the restart.
+let restartWatch = null;
+function restartForUpdate() {
+  if (updateStatus.state !== 'ready' && updateStatus.state !== 'restarting') return updateStatus;
+  const ready = updateStatus.state === 'ready' ? updateStatus : updateStatus.ready;
+  const plan = planRestart({ running: engine.runningCount(), needsInstall: !!ready.needsInstall });
+  if (plan.waitFor > 0) {
+    engine.holdNewJobs(true);
+    clearInterval(restartWatch);
+    restartWatch = setInterval(() => {
+      const n = engine.runningCount();
+      if (n === 0) { clearInterval(restartWatch); doRestart(plan); } else if (n !== updateStatus.waitFor) setUpdateStatus({ state: 'restarting', waitFor: n, ready });
+    }, 2000);
+    return setUpdateStatus({ state: 'restarting', waitFor: plan.waitFor, ready });
+  }
+  doRestart(plan);
+  return updateStatus;
+}
+
+function cancelRestart() {
+  if (updateStatus.state !== 'restarting') return updateStatus;
+  clearInterval(restartWatch);
+  engine.holdNewJobs(false);
+  return setUpdateStatus(updateStatus.ready);
+}
+
+function doRestart(plan) {
+  engine.saveNow(); // app.exit() skips before-quit
+  if (plan.mode === 'install-then-launch') {
+    // npm ci must not run while electron.exe is in use: a helper waits for this
+    // process to exit, installs, checks the shortcut's electron.exe, and relaunches.
+    const ps1 = path.join(app.getPath('userData'), 'update-install.ps1');
+    const logFile = path.join(app.getPath('userData'), 'update-install.log');
+    fs.writeFileSync(ps1, installScript({ pid: process.pid, dir: updater.dir, electronPath: process.execPath, logFile }));
+    const { spawn } = require('child_process');
+    spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', ps1], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+  } else {
+    app.relaunch();
+  }
+  app.exit(0);
+}
+
+function updateMenuItems() {
+  const st = updateStatus;
+  if (st.state === 'available') return [{ label: `Update Burrowby Works (${plural(st.behind, 'change')})`, click: () => applyUpdate() }];
+  if (st.state === 'ready') return [{ label: `Restart to finish the update (${st.to})`, click: () => restartForUpdate() }];
+  if (st.state === 'restarting') return [{ label: `Cancel restart (waiting for ${plural(st.waitFor, 'job')})`, click: () => cancelRestart() }];
+  if (st.state === 'blocked' && st.show) return [{ label: "Update blocked: see Settings", click: openSettings }];
+  return [];
+}
+
 function registerIpc() {
   const win = (e) => BrowserWindow.fromWebContents(e.sender);
 
@@ -350,8 +458,16 @@ function registerIpc() {
       buttons: ['Release', 'Cancel'], defaultId: 1, cancelId: 1, noLink: true,
     });
     if (r.response !== 0) return { released: false, note: 'Canceled. Nothing was released.' };
-    return engine.releaseToProd(projectId, pv.devSha);
+    const rel = await engine.releaseToProd(projectId, pv.devSha);
+    // If this release changed the app's own repository, the app's folder is now behind.
+    if (rel.released) setTimeout(() => applyUpdate({ afterRelease: true }), 1500);
+    return rel;
   }));
+  ipcMain.handle('update:get', () => updateStatus);
+  ipcMain.handle('update:check', () => checkForUpdate());
+  ipcMain.handle('update:apply', () => applyUpdate());
+  ipcMain.handle('update:restart', () => restartForUpdate());
+  ipcMain.handle('update:cancel', () => cancelRestart());
   ipcMain.handle('works:repo-info', async () => ({ root: engine.repos.root, appDir: engine.repos.appDir, gh: await engine.repos.ghStatus() }));
 
   // Settings window
@@ -411,6 +527,9 @@ app.whenReady().then(() => {
       cwd: store.dir,
     },
   });
+  updater = new Updater({ dir: app.getAppPath(), electronPath: process.execPath });
+  setTimeout(checkForUpdate, 20000);
+  setInterval(checkForUpdate, 10 * 60 * 1000);
   engine.on('patch', (p) => broadcast('works:patch', p));
   engine.on('reset', (s) => broadcast('works:reset', s));
   engine.on('notice', (n) => broadcast('works:notice', n));
