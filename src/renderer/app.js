@@ -789,6 +789,12 @@ function syncConc() {
   $('concNum').setAttribute('aria-label', `Jobs at once (1 to ${maxConc()})`);
   $('concNum').value = concurrency;
   $('concNote').hidden = concurrency < 6;
+  // Show the saved value and why the upper limit is what it is; refreshed on hire/retire via syncConc.
+  const cap = maxConc();
+  const why = workers.length < 12
+    ? `by hired workers (${workers.length} hired)`
+    : 'by the maximum of 12';
+  $('concCap').textContent = `Set to ${concurrency}. Limited to ${cap} ${why}.`;
 }
 document.querySelector('.obs').addEventListener('pointerdown', () => { holdRender = true; });
 window.addEventListener('pointerup', () => { setTimeout(() => { holdRender = false; }, 60); });
