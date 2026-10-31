@@ -10,6 +10,7 @@ const works = {
   getState: invoke('works:state'),
   cliStatus: invoke('works:cli-status'),
   getDigest: invoke('works:digest'),
+  exportDigest: invoke('works:export-digest'),
   createJob: invoke('works:create-job'),
   stopJob: invoke('works:stop-job'),
   retryJob: invoke('works:retry-job'),

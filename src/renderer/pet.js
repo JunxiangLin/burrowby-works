@@ -215,7 +215,17 @@
     }
     bubbleEl.hidden = false;
   }
-  bubbleEl.addEventListener('click', (e) => {
+  bubbleEl.addEventListener('click', async (e) => {
+    const exp = e.target.closest('[data-export]');
+    if (exp) {
+      e.preventDefault();
+      clearTimeout(bubbleTimer);
+      exp.textContent = 'Exporting…';
+      const r = await works.exportDigest();
+      exp.textContent = r && r.ok ? `Saved to ${r.path}` : `Export failed: ${(r && r.error) || 'unknown error'}`;
+      bubbleTimer = setTimeout(() => (bubbleEl.hidden = true), 20000);
+      return;
+    }
     const more = e.target.closest('[data-more]');
     bubbleEl.hidden = true;
     openChat(more ? 'jobs' : tab);
@@ -229,7 +239,8 @@
     else {
       const hasMore = d.sections.some((x) => x.more);
       bubbleEl.innerHTML = d.sections.map((x) => `<div class="dg"><b>${esc(x.title)} (${x.total})</b>${x.items.map((i) => `<div>• ${esc(i)}</div>`).join('')}</div>`).join('')
-        + `<a href="#" data-more style="color:var(--accent,#FF8A3D)">${hasMore ? 'See more' : 'Open jobs'}</a>`;
+        + `<a href="#" data-more style="color:var(--accent,#FF8A3D)">${hasMore ? 'See more' : 'Open jobs'}</a>`
+        + ` · <a href="#" data-export style="color:var(--accent,#FF8A3D)">Export</a>`;
     }
     bubbleEl.hidden = false;
     bubbleTimer = setTimeout(() => (bubbleEl.hidden = true), 20000);
