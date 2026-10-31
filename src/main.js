@@ -463,6 +463,16 @@ function registerIpc() {
     if (rel.released) setTimeout(() => applyUpdate({ afterRelease: true }), 1500);
     return rel;
   }));
+  // Build label: package version plus git short hash of the app folder, read fresh each launch.
+  let buildLabel = null;
+  ipcMain.handle('app:build', () => {
+    if (!buildLabel) buildLabel = new Promise((resolve) => {
+      const v = app.getVersion();
+      execFile('git', ['rev-parse', '--short', 'HEAD'], { cwd: path.join(__dirname, '..'), timeout: 5000, windowsHide: true },
+        (err, out) => resolve(!err && String(out).trim() ? `v${v} (${String(out).trim()})` : `v${v}`));
+    });
+    return buildLabel;
+  });
   ipcMain.handle('update:get', () => updateStatus);
   ipcMain.handle('update:check', () => checkForUpdate());
   ipcMain.handle('update:apply', () => applyUpdate());

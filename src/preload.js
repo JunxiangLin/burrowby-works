@@ -9,6 +9,7 @@ const invoke = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
 const works = {
   getState: invoke('works:state'),
   cliStatus: invoke('works:cli-status'),
+  buildInfo: invoke('app:build'),
   getDigest: invoke('works:digest'),
   createJob: invoke('works:create-job'),
   stopJob: invoke('works:stop-job'),

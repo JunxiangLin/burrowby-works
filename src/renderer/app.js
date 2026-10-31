@@ -713,10 +713,18 @@ function paintWorkerDetail(force) {
     retireArmed = false; $('retireBtn').textContent = 'Retire';
   }
 }
+// Footer: build version (fetched once per launch) and hired-worker count (same source as the Workers tab).
+let buildLabel = '';
+if (api.buildInfo) api.buildInfo().then((b) => { buildLabel = b || ''; renderBuild(); }).catch(() => {});
+function renderBuild() {
+  const el = $('buildInfo');
+  if (el) el.textContent = `${buildLabel ? buildLabel + ' · ' : ''}${workers.length} hired ${workers.length === 1 ? 'worker' : 'workers'}`;
+}
 function renderHeader() {
   const running = jobs.filter(j => j.status === 'running').length, queued = jobs.filter(j => j.status === 'queued').length;
   $('shift').textContent = ready ? `${workers.length} on shift · ${running} running · ${queued} queued` : 'opening the factory…';
   $('jobCount').textContent = jobs.length; $('workerCount').textContent = workers.length;
+  renderBuild();
   $('lines').textContent = `${running} of ${concurrency} lines busy`;
   $('lines').className = 'mode' + (running ? ' live' : '');
 }
