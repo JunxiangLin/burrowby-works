@@ -477,7 +477,7 @@ function md(src) {
 
 // ---------- dashboard ----------
 let tab = lsGet('burrowby.works.tab') || 'overview';
-let selJob = null, selWorker = null, jobFilter = 'all', holdRender = false;
+let selJob = null, selWorker = null, jobFilter = 'all', jobQuery = '', holdRender = false;
 
 function niceMax(v) { if (v <= 0) return 1; const p = 10 ** Math.floor(Math.log10(v)); for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p; return 10 * p; }
 function legendItems(items) { return items.map(([c, l, v]) => `<span><i style="background:${c}"></i>${l}${v != null ? `<b>${v}</b>` : ''}</span>`).join(''); }
@@ -573,7 +573,14 @@ function renderOverview() {
     </div>`;
 }
 function renderJobs() {
-  const list = jobs.filter(j => jobFilter === 'all' || (jobFilter === 'active' ? isActive(j) : jobFilter === 'done' ? j.status === 'done' : j.status === 'failed' || j.status === 'cancelled')).slice().reverse();
+  const q = jobQuery.trim().toLowerCase();
+  // Search matches job number (#12 or 12), task key (BW-14) or worker name; combines with the status filter.
+  const matches = j => {
+    if (!q) return true;
+    const t = j.taskId && taskById(j.taskId), w = byWorker(j.workerId || j.pref);
+    return [`#${j.n}`, String(j.n), t ? taskKey(t) : '', w ? w.name : ''].some(s => s.toLowerCase().includes(q));
+  };
+  const list = jobs.filter(j => (jobFilter === 'all' || (jobFilter === 'active' ? isActive(j) : jobFilter === 'done' ? j.status === 'done' : j.status === 'failed' || j.status === 'cancelled')) && matches(j)).slice().reverse();
   $('jobList').innerHTML = list.length ? list.map(j => {
     const w = byWorker(j.workerId || j.pref); const [sl, sc] = STATUS[j.status];
     const dur = j.status === 'queued' ? `waiting ${fmtDur(waitMs(j))}` : j.startedAt ? fmtDur(runMs(j)) : '–';
@@ -583,7 +590,7 @@ function renderJobs() {
       <span class="pill" style="--c:${sc}">${sl}</span>
       <span class="meta">${j.taskId && taskById(j.taskId) ? `<span>${esc(taskKey(taskById(j.taskId)))}</span>` : ''}${j.ctx && j.ctx.length ? `<span>${j.ctx.length} ctx</span>` : ''}<span>${w ? esc(w.name) : 'any worker'}</span><span>${dur}</span><span>≈${fmtNum(j.outTok || 0)} tok</span><span>${TIER_LABEL[j.tierApplied || j.tier] || ''}</span>${j.kind === 'code' ? '<span>code</span>' : j.kind === 'pm' ? '<span>pm</span>' : ''}${j.pr ? `<span>PR #${j.pr.number}</span>` : ''}${j.simulated ? '<span>simulated</span>' : ''}<span>${ago(j.createdAt)}</span></span>
     </div>`;
-  }).join('') : `<div class="empty">${jobs.length ? 'No jobs match this filter.' : 'No jobs yet. Describe one above and press Assign job.'}</div>`;
+  }).join('') : `<div class="empty">${jobs.length ? 'No jobs match your search or filter.' : 'No jobs yet. Describe one above and press Assign job.'}</div>`;
   paintJobDetail();
 }
 let paintedOut = { id: null, len: -1, status: null };
@@ -801,6 +808,7 @@ $('jobFilters').addEventListener('click', e => {
   for (const x of document.querySelectorAll('#jobFilters [data-f]')) x.setAttribute('aria-pressed', String(x === b));
   holdRender = false; renderJobs();
 });
+$('jobSearch').addEventListener('input', e => { jobQuery = e.target.value; holdRender = false; renderJobs(); });
 $('jobDetail').addEventListener('click', async e => {
   const a = e.target.closest('[data-act]'); if (!a) return;
   const j = jobById(selJob);
