@@ -10,7 +10,7 @@ const { Engine, SPECIES } = require('./engine');
 const { Repos } = require('./repos');
 const cli = require('./cli');
 const { Updater, installScript, planRestart } = require('./updater');
-const { buildDigest } = require('./digest');
+const { buildDigest, buildDigestMarkdown } = require('./digest');
 
 // The GitHub CLI may be installed after the app started, so look it up on each call.
 function ghExe() {
@@ -415,6 +415,17 @@ function registerIpc() {
   ipcMain.handle('works:state', () => engine.snapshot());
   ipcMain.handle('works:cli-status', () => cliStatus);
   ipcMain.handle('works:digest', () => makeDigest());
+  // Save today's summary as Markdown in %USERPROFILE%\Burrowby; returns the saved path.
+  ipcMain.handle('works:export-digest', () => {
+    try {
+      const { name, markdown } = buildDigestMarkdown({ jobs: engine.jobs, tasks: engine.tasks, taskKey: (t) => engine.taskKey(t) });
+      const dir = path.join(require('os').homedir(), 'Burrowby');
+      fs.mkdirSync(dir, { recursive: true });
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, markdown, 'utf8');
+      return { ok: true, path: file };
+    } catch (e) { return { ok: false, error: String(e.message || e) }; }
+  });
   ipcMain.handle('works:create-job', (_e, { text, pref, tier, extra }) => engine.createJob(String(text || ''), pref || 'any', tier || 'default', {
     ...(extra && extra.projectId ? { projectId: extra.projectId } : {}),
     ...(extra && Array.isArray(extra.ctx) ? { ctx: extra.ctx } : {}),
